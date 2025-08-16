@@ -6,7 +6,7 @@ from pydantic_ai import Agent
 
 from src.config.settings import settings
 
-from .stack_search import ContextRetriever
+from .utils import ContextRetriever
 
 
 class StructureSearch:
@@ -27,9 +27,7 @@ class StructureSearch:
             model=settings.model_choice,
             system_prompt=self.DEFAULT_SYSTEM_PROMPT,
         )
-        self.context_retriever = context_retriever or ContextRetriever(
-            settings.supabase_url, settings.supabase_key
-        )
+        self.context_retriever = context_retriever or ContextRetriever()
 
     def suggest(self, query: str, match_count: int = 3):
         """

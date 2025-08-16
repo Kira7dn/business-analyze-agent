@@ -1,6 +1,6 @@
 [MASTER]
 # Ignore test directories
-ignore = venv, .git, __pycache__
+ignore = venv, .git, __pycache__, *.md
 
 # Disable specific checks for test files
 [MASTER_OPTIONS]
@@ -14,7 +14,12 @@ disable =   protected-access,
             broad-exception-caught,
             line-too-long,
             logging-fstring-interpolation,
-            import-outside-toplevel
+            import-outside-toplevel,
+            missing-module-docstring,
+            missing-class-docstring,
+            missing-function-docstring,
+            wrong-import-order,
+            wrong-import-position
 
 [MESSAGES CONTROL]
 # Disable specific checks for test files

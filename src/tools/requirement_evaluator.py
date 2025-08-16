@@ -16,10 +16,6 @@ from pydantic_ai import Agent
 # Setup logger
 logger = logging.getLogger(__name__)
 
-# Set console output encoding to UTF-8 for Windows
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="ignore")
-
 
 # Evaluation output schema
 class Question(BaseModel):

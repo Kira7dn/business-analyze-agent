@@ -17,6 +17,7 @@ from .tools.analyzer import RequirementAnalyzer
 from .tools.question_generator import QuestionGenerator
 from .tools.requirement_evaluator import RequirementEvaluator
 from .tools.feature_suggestion import FeatureSuggestionAgent
+from .tools.class_parser import ClassParser
 from .utils.logger import setup_logger
 from .config.settings import settings
 
@@ -35,6 +36,7 @@ try:
     stack_search = StackSearch()
     stack_store = ChunkEmbedStore(table_name="tech_stacks")
     structure_store = ChunkEmbedStore(table_name="tech_structures")
+    class_parser = ClassParser()
     logger.info("All tools initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize tools: {str(e)}")
@@ -129,6 +131,20 @@ async def list_tools() -> List[Tool]:
                     }
                 },
                 "required": ["file_path"],
+            },
+        ),
+        Tool(
+            name="class_parser",
+            description="Parse PRD text to backend classes using Pydantic AI.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prd_text": {
+                        "type": "string",
+                        "description": "Product Requirements Document text to parse.",
+                    }
+                },
+                "required": ["prd_text"],
             },
         ),
     ]
@@ -271,6 +287,12 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 f"Storing chunks of text into Supabase with embeddings: {file_path}"
             )
             result = await structure_store.process(file_path)
+            return [TextContent(type="text", text=result)]
+        elif name == "class_parser":
+            prd_text = arguments.get("prd_text", "")
+            logger.info("Parsing PRD to backend classes")
+            class_parser = ClassParser()
+            result = await class_parser.process(prd_text)
             return [TextContent(type="text", text=result)]
         else:
             return [

@@ -2,77 +2,13 @@
 RAG Agent module: tech stack suggestion using Pydantic AI.
 """
 
-import os
 import openai
-from dotenv import load_dotenv
-from supabase import create_client, Client
 from pydantic_ai import Agent
-
-# ===========================
-# Config & Environment Loader
-# ===========================
+from src.config.settings import settings
+from .utils import ContextRetriever
 
 
-class Config:
-    """Load and validate environment variables for the application."""
-
-    def __init__(self):
-        load_dotenv()
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not self.openai_api_key:
-            raise EnvironmentError("OPENAI_API_KEY is not set in environment.")
-
-
-config = Config()
-openai.api_key = config.openai_api_key
-
-# ===========================
-# Utility Functions
-# ===========================
-
-
-# ===========================
-# Pydantic Model & AI Decorator
-# ===========================
-
-
-class ContextRetriever:
-    """Retrieve context from Supabase database."""
-
-    def __init__(self, supabase_url: str, supabase_key: str):
-        self.supabase_url = supabase_url
-        self.supabase_key = supabase_key
-        self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
-
-    def get_context(self, query: str, match_count: int = 3) -> str:
-        """
-        Retrieve context from Supabase database based on semantic similarity to the query.
-        Args:
-            query (str): Query string for semantic search.
-            match_count (int): Number of context documents to retrieve.
-        Returns:
-            str: Retrieved context.
-        """
-        try:
-            # 1. Generate embedding for the query
-            response = openai.embeddings.create(
-                model="text-embedding-3-small",
-                input=query,
-            )
-            query_embedding = response.data[0].embedding
-
-            # 2. Call the match_tech_stacks function via Supabase RPC
-            response = self.supabase.rpc(
-                "match_tech_stacks",
-                {
-                    "query_embedding": query_embedding,
-                    "match_count": match_count,
-                },
-            ).execute()
-            results = [item["content"] for item in response.data]
-            return "\n\n".join(results)
-        except Exception as e:
-            raise RuntimeError(f"Failed to retrieve context: {e}") from e
+openai.api_key = settings.openai_api_key
 
 
 class StackSearch:
@@ -93,9 +29,7 @@ class StackSearch:
             model="openai:gpt-4o",
             system_prompt=self.DEFAULT_SYSTEM_PROMPT,
         )
-        self.context_retriever = context_retriever or ContextRetriever(
-            os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY")
-        )
+        self.context_retriever = context_retriever or ContextRetriever()
 
     def suggest(self, query: str, match_count: int = 3):
         """

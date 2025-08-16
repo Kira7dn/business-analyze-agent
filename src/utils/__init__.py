@@ -1,4 +1,7 @@
-from .logger import setup_logger
-from .config import load_config
+"""
+Logging utilities
+"""
 
-__all__ = ["setup_logger", "load_config"]
+from .logger import setup_logger
+
+__all__ = ["setup_logger"]

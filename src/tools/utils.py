@@ -13,8 +13,9 @@ from typing import Any, Dict, List, Tuple, Callable
 
 import openai
 from tiktoken import get_encoding
-
 from supabase import create_client, Client
+
+from src.config.settings import settings
 
 
 def html_to_markdown(
@@ -447,3 +448,42 @@ def smart_chunk_markdown_from_text(
     # Flush last chunk
     flush_chunk()
     return chunks
+
+
+class ContextRetriever:
+    """Retrieve context from Supabase database."""
+
+    def __init__(self):
+        self.supabase_url = settings.supabase_url
+        self.supabase_key = settings.supabase_key
+        self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
+
+    def get_context(self, query: str, match_count: int = 3) -> str:
+        """
+        Retrieve context from Supabase database based on semantic similarity to the query.
+        Args:
+            query (str): Query string for semantic search.
+            match_count (int): Number of context documents to retrieve.
+        Returns:
+            str: Retrieved context.
+        """
+        try:
+            # 1. Generate embedding for the query
+            response = openai.embeddings.create(
+                model="text-embedding-3-small",
+                input=query,
+            )
+            query_embedding = response.data[0].embedding
+
+            # 2. Call the match_tech_stacks function via Supabase RPC
+            response = self.supabase.rpc(
+                "match_tech_stacks",
+                {
+                    "query_embedding": query_embedding,
+                    "match_count": match_count,
+                },
+            ).execute()
+            results = [item["content"] for item in response.data]
+            return "\n\n".join(results)
+        except Exception as e:
+            raise RuntimeError(f"Failed to retrieve context: {e}") from e

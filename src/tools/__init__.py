@@ -7,8 +7,10 @@ from .analyzer import RequirementAnalyzer
 from .question_generator import QuestionGenerator
 from .stack_search import StackSearch
 from .chunk_embed_store import ChunkEmbedStore
+
 from .requirement_evaluator import RequirementEvaluator
 from .feature_suggestion import FeatureSuggestionAgent
+from .class_parser import ClassParser
 
 __all__ = [
     "RequirementAnalyzer",
@@ -17,4 +19,5 @@ __all__ = [
     "ChunkEmbedStore",
     "RequirementEvaluator",
     "FeatureSuggestionAgent",
+    "ClassParser",
 ]
