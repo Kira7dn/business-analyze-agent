@@ -10,7 +10,7 @@ The pipeline follows these steps:
 3. Convert DataFlow to FunctionSpec
 """
 
-from typing import Dict, List
+from typing import List, Optional
 import json
 import logging
 import sys
@@ -31,7 +31,7 @@ class UserFlow(BaseModel):
     """User flow for a feature."""
 
     feature: str = Field(
-        description="Name of the feature (e.g., 'User Registration', 'Product Search')."
+        description="Name of the feature in PascalCase action-oriented format (e.g., 'RegisterUser', 'SearchProduct'). This will become the Use Case class name."
     )
     actor: str = Field(
         description="Primary user or system actor for this flow (e.g., 'Customer', 'Admin')."
@@ -103,7 +103,7 @@ class DataFlow(BaseModel):
     )
     data_flow_steps: List[str] = Field(
         default_factory=list,
-        description="List of all data flow steps in string format.",
+        description="List of backend data operations in VerbNoun format (e.g., 'ValidateOrder', 'SaveCustomer'). Each step maps to a method call in the Use Case execute() method.",
     )
 
     class Config:
@@ -154,18 +154,28 @@ class MethodSpec(BaseModel):
 class ClassDefinition(BaseModel):
     """Class definition for a feature."""
 
-    class_name: str = Field(description="Name of the class in snake_case format.")
+    class_name: str = Field(description="Name of the class in PascalCase format.")
     layer: str = Field(
-        description="The architectural layer/role of the class (e.g., 'Entity', 'Service', 'Repository Interface', 'Repository Implementation')."
+        description=(
+            "Deterministic architectural layer tag of the class. One of: "
+            "'domain/entity', 'domain/service', "
+            "'application/use_case', 'application/repository_interface', 'application/adapter_interface', "
+            "'infrastructure/repository', 'infrastructure/adapter', 'infrastructure/model', "
+            "'presentation/schema'."
+        )
+    )
+    inheritance: Optional[List[str]] = Field(
+        default_factory=list,
+        description="List of interfaces or base classes this class implements/extends (e.g., ['IOrderRepository', 'BaseRepository']).",
     )
     description: str = Field(
         description="Description of the class's purpose and role within the architecture."
     )
-    attributes: List[str] = Field(
+    attributes: Optional[List[str]] = Field(
         default_factory=list,
         description="List of attributes in format 'name: type'.",
     )
-    methods: List[MethodSpec] = Field(
+    methods: Optional[List[MethodSpec]] = Field(
         default_factory=list,
         description="List of methods in MethodSpec format.",
     )
@@ -175,28 +185,21 @@ class ClassDefinition(BaseModel):
 
         json_schema_extra = {
             "example": {
-                "class_name": "User",
-                "layer": "Data Model",
-                "description": "Data model for a user in the system.",
-                "attributes": ["email: string", "age: integer"],
+                "class_name": "SQLOrderRepository",
+                "inheritance": ["IOrderRepository"],
+                "layer": "infrastructure/repository",
+                "description": "Implements IOrderRepository using SQLAlchemy with PostgreSQL.",
+                "attributes": ["db: Session"],
                 "methods": [
                     {
-                        "method_name": "search_products",
-                        "description": "Searches for products based on keywords and filters",
-                        "parameters": ["keyword: str", "page: int = 1"],
-                        "return_type": "dict",
+                        "method_name": "save",
+                        "description": "Persist an order and return the stored entity with assigned id.",
+                        "parameters": ["order: Order"],
+                        "return_type": "Order",
                     }
                 ],
             }
         }
-
-
-class ClassOutput(BaseModel):
-    """Collection of class definitions for implementing PRD requirements."""
-
-    classes: List[ClassDefinition] = Field(
-        description="List of all necessary classes to implement the PRD requirements."
-    )
 
 
 # 2. Define agent factories for each step
@@ -223,12 +226,29 @@ def prd_to_userflow_agent(model_name: str = "openai:o4-mini"):
         retries=3,
         model_settings=settings,
         system_prompt=(
-            "You are a requirements analyst. Carefully read the following PRD (Product Requirements Document) and extract the following information as a single object:\n\n"
-            "1.  All distinct 'Feature Suggestions by User Role'. For each feature, create a UserFlow object with the following details:\n"
-            "* `feature`: The name of the feature.\n"
-            "* `actor`: The user role associated with the feature.\n"
-            "* `steps`: A list of necessary sequential actions or steps within that user flow, additional action or step is not allowed.\n"
-            "2. The overall 'Project description'\n"
+            "You are a requirements analyst specializing in Clean Architecture feature extraction. Extract UserFlows that will map 1:1 to Use Cases.\n\n"
+            "EXTRACTION RULES:\n"
+            "• Each feature becomes exactly ONE Use Case with single execute() method\n"
+            "• Feature name should be PascalCase and action-oriented (e.g., 'PlaceOrder', 'RegisterUser')\n"
+            "• Actor represents the primary user role for this workflow\n"
+            "• Steps should be user actions that trigger backend operations\n\n"
+            "STEP GUIDELINES:\n"
+            "• Focus on user interactions that require backend processing\n"
+            "• Avoid UI-only steps (e.g., 'User clicks button')\n"
+            "• Include validation and business logic steps\n"
+            "• Each step should trigger a backend operation\n"
+            "• Keep steps sequential and necessary only\n\n"
+            "OUTPUT REQUIREMENTS:\n"
+            "1. Extract ALL distinct features from PRD sections:\n"
+            "   - Feature Suggestions by Role\n"
+            "   - Functional Requirements\n"
+            "   - User Stories\n"
+            "2. Create UserFlow for each feature with:\n"
+            "   - feature: PascalCase action name\n"
+            "   - actor: Primary user role\n"
+            "   - steps: Sequential user actions requiring backend\n"
+            "3. Include project_description from PRD overview\n\n"
+            "Each UserFlow will become a Use Case in Clean Architecture."
         ),
     )
 
@@ -254,14 +274,30 @@ def userflow_to_dataflow_agent(model_name: str = "openai:o4-mini"):
         model_settings=settings,
         retries=3,
         system_prompt=(
-            "You are an expert Software Architect and System Designer specializing in backend data flows. Your task is to provided **Project Description** and **User Flow** to design a **Data Flow** that outlines the necessary backend data operations. Only necessary steps, additional steps or optimization steps are not allowed.\n"
-            "\n"
-            "For each data flow, use the following structure:\n"
-            "- **project_description**: The project description (e.g., 'Build a web application for order management that helps warehouse staff process orders.')\n"
-            "- **feature**: The name of the feature (e.g., 'OrderConfirmation')\n"
-            "- **actor**: The name of the user or system interacting with the feature (e.g., 'Warehouse staff')\n"
-            "- **description**: A concise summary of the data operations required for this feature.\n"
-            "- **data_flow_steps**: A minimal list detailing the data transformation and manipulation steps performed in the backend to meet the feature requirements outlined in the user flow. Only necessary steps, additional steps or optimization steps are not allowed (e.g., ['FetchUnconfirmedOrders: Retrieves all unconfirmed orders from the database']).\n"
+            "You are a backend architect specializing in Clean Architecture DataFlow design. Convert User Flow to DataFlow that maps 1:1 to a Use Case with single 'execute()' method.\n\n"
+            "DATAFLOW = USE CASE MAPPING:\n"
+            "• DataFlow input parameters → Use Case execute() parameters\n"
+            "• DataFlow output → Use Case execute() return type\n"
+            "• DataFlow steps → orchestration logic inside execute()\n\n"
+            "STEP NAMING RULES:\n"
+            "• Use VerbNoun format (e.g., 'ValidateOrder', 'SaveCustomer', 'SendEmail')\n"
+            "• Each step maps to either:\n"
+            "  - Domain entity method (intrinsic behavior)\n"
+            "  - Repository interface method (persistence)\n"
+            "  - Adapter interface method (external service)\n"
+            "• NO UI, auth, logging, DI, or cross-cutting concerns\n"
+            "• Steps must be backend data operations only\n\n"
+            "CONSTRAINTS:\n"
+            "• Include ONLY steps necessary for the User Flow\n"
+            "• No optimization or 'nice-to-have' steps\n"
+            "• Each step should be implementable as a single method call\n"
+            "• Steps should follow business logic sequence\n\n"
+            "OUTPUT FORMAT:\n"
+            "- project_description: from input\n"
+            "- feature: PascalCase feature name\n"
+            "- actor: from User Flow\n"
+            "- description: 2-3 sentences explaining the DataFlow purpose\n"
+            "- data_flow_steps: minimal list of VerbNoun operations\n"
         ),
     )
 
@@ -279,7 +315,7 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
     settings = OpenAIResponsesModelSettings(
         openai_reasoning_effort="low",
         openai_reasoning_summary="detailed",
-        temperature=0.2,
+        temperature=0.1,
     )
     return Agent(
         model_name,
@@ -287,16 +323,39 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
         retries=3,
         model_settings=settings,
         system_prompt=(
-            "You are a backend architect. Based on the **DataFlow**, design **minimal OOP classes** following a **Onion Architecture pattern**. Focus solely on **Data Models, Repositories, and Services**.\n\n"
-            "For each feature must include these layers:\n"
-            "1.  **Entity:** Core business entity. Attributes: 'name: type'. Methods: Intrinsic behaviors only (no CRUD).\n"
-            "2.  **Service(Use Case):** Business logic layer. Orchestrates operations using Repositories. Attributes: Dependencies (e.g., 'order_repo: OrderRepository'). Methods: Business actions (e.g., 'create_order', 'confirm_order'). Do NOT interact directly with data store.\n"
-            "3.  **Repository:** Defines data access operations.\n"
-            "    - **Interface (Port):** Abstract definition of data operations (e.g., 'OrderRepository'). Located in the **Application layer**. Attributes: None. Methods: Abstract CRUD/query methods.\n"
-            "    - **Implementation (Adapter):** Concrete implementation of the Repository Interface (e.g., 'SQLOrderRepository'). Located in the **Infrastructure layer**. Attributes: Database connection/ORM. Methods: Implements interface methods, interacts with data store.\n"
-            "**Guidelines:**\n"
-            "- Each class should include class_name: string, layer: string, description: string, attributes: list, methods: list"
-            "- Use **PascalCase** for class names, **snake_case** for attributes/methods.\n"
+            "You are a backend architect specializing in Onion/Clean Architecture. Design minimal OOP classes from the DataFlow that strictly follow the dependency rule: Domain → Application → Infrastructure → Presentation.\n\n"
+            "CRITICAL RULES:\n"
+            "1. Use Case MUST have exactly ONE public method named 'execute'\n"
+            "2. Domain entities have NO I/O operations (no save, fetch, etc.)\n"
+            "3. Application layer depends ONLY on interfaces, never implementations\n"
+            "4. Infrastructure implements Application interfaces\n"
+            "5. Use exact layer tags: 'domain/entity', 'domain/service', 'application/use_case', 'application/repository_interface', 'application/adapter_interface', 'infrastructure/repository', 'infrastructure/adapter', 'infrastructure/model', 'presentation/schema'\n\n"
+            "LAYER SPECIFICATIONS:\n"
+            "Domain Layer:\n"
+            "• Entities (domain/entity): Business objects with intrinsic behaviors only. NO persistence methods.\n"
+            "• Services (domain/service): Pure business algorithms. May depend on other domain services.\n"
+            "Application Layer:\n"
+            "• Use Case (application/use_case): Orchestrates DataFlow steps via interfaces. Single 'execute()' method maps 1:1 to DataFlow input/output. Dependencies are injected interfaces.\n"
+            "  IMPORTANT: Method descriptions must include detailed step-by-step execution logic:\n"
+            "  - Validation steps (what to validate and how)\n"
+            "  - Domain method calls (which entity/service methods to call)\n"
+            "  - Repository interactions (fetch, save operations)\n"
+            "  - Business logic sequence (order of operations)\n"
+            "  - Error handling scenarios\n"
+            "  Example: 'Validates request.items not empty, creates Order entity via Order.create(), validates business rules via order.validate_new(), saves via repository.save(), logs audit via audit_repository.log(), returns CreateOrderResponse with order.id'\n"
+            "• Repository Interface (application/repository_interface): Abstract persistence. Name: I<Entity>Repository. No attributes.\n"
+            "• Adapter Interface (application/adapter_interface): Abstract external services. Name: I<Capability>Adapter. No attributes.\n"
+            "Infrastructure Layer:\n"
+            "• Repository (infrastructure/repository): Implements repository interface. Name: <Tech><Entity>Repository. Set inheritance field.\n"
+            "• Adapter (infrastructure/adapter): Implements adapter interface. Name: <Tech><Capability>Adapter. Set inheritance field.\n"
+            "• Model (infrastructure/model): ORM mapping only. No business logic.\n"
+            "Presentation Layer:\n"
+            "• Schema (presentation/schema): Request/Response DTOs. No methods.\n\n"
+            "FORMAT:\n"
+            "- class_name: PascalCase\n"
+            "- attributes/methods: snake_case\n"
+            "- inheritance: list of interface names for implementations (e.g., ['IOrderRepository'])\n"
+            "- Generate only classes needed for this specific DataFlow\n"
         ),
     )
 
@@ -322,34 +381,37 @@ def verify_classes_agent(model_name: str = "openai:o4-mini"):
         retries=3,
         model_settings=settings,
         system_prompt=(
-            "You are a senior software architecture assistant specializing in **Onion Architecture** for enterprise systems. "
-            "Your task is to analyze and optimize the provided class designs, ensuring they strictly adhere to the Onion Architecture pattern.\n\n"
-            "The input JSON contains:\n"
-            "- A list of classes with their definitions (name, layer, description, attributes, methods).\n"
-            "- These classes might mix business logic with auxiliary concerns or inappropriate architectural roles.\n\n"
-            "## 🎯 GOAL:\n"
-            "Redesign the class model to a **minimal, clean, and optimized Object-Oriented structure** that strictly follows the Onion Architecture pattern, focusing ONLY on **Data Models, Repositories, and Services**.\n\n"
-            "## ❌ REMOVE:\n"
-            "- Any class or method related to **technical infrastructure or cross-cutting concerns**, including:\n"
-            "  - Authentication, authorization, OAuth2, session or token validation\n"
-            "  - Logging, error handling/wrapping, response formatting\n"
-            "  - Database connection management (outside of what a Repository needs to abstract)\n"
-            "- Service or orchestration methods that do not directly contribute to the core business flow (e.g., purely technical orchestration).\n\n"
-            "## ✅ KEEP & OPTIMIZE:\n"
-            "- Retain and refine only **essential Entities**, **Services**, **Repository Interfaces**, and **Repository Implementations** directly tied to the core business logic of the DataFlow.\n"
-            "- Ensure each class has a **single, well-defined responsibility** according to its Onion Architecture role:\n"
-            "  - **Entity:** Represent core business entities; contain attributes and intrinsic behaviors only (no CRUD methods).\n"
-            "  - **Service:** Encapsulate business rules and workflows; orchestrate operations using Repositories; do NOT directly interact with the data store.\n"
-            "  - **Repository Interface:** Abstract definition of data operations; located in the **Application layer**. Attributes: None. Methods: Abstract CRUD/query methods.\n"
-            "  - **Repository Implementation:** Concrete implementation of the Repository Interface; located in the **Infrastructure layer**. Attributes: Database connection/ORM. Methods: Implements interface methods, interacts with data store.\n"
-            "  - **Repository Interface:** Abstract definition of data operations; located in the **Application layer**. Attributes: None. Methods: Abstract CRUD/query methods.\n"
-            "  - **Repository Implementation:** Concrete implementation of the Repository Interface; located in the **Infrastructure layer**. Attributes: Database connection/ORM. Methods: Implements interface methods, interacts with data store.\n"
-            "- Eliminate redundancy by consolidating equivalent entities or logic.\n"
-            "- Rename classes (PascalCase) and methods/attributes (snake_case) to reflect clear business actions and architectural roles.\n\n"
-            "## 📤 OUTPUT:\n"
-            "Return the following information as a single object:\n"
-            "- classes: List of optimized classes (Data Models, Repositories, Services) in the correct format.\n"
-            "- notes: Explain how these optimized classes, designed under the Onion Architecture pattern, collaborate to fulfill the feature’s business logic and requirements."
+            "You are a Clean Architecture validator. Verify and fix class designs to strictly follow Onion Architecture principles from the guide.\n\n"
+            "VALIDATION CHECKLIST:\n"
+            "✓ Each Use Case has exactly ONE public method named 'execute'\n"
+            "✓ Domain entities contain NO I/O operations (save, fetch, load, etc.)\n"
+            "✓ Application layer depends ONLY on interfaces (I-prefixed)\n"
+            "✓ Infrastructure classes implement their corresponding interfaces\n"
+            "✓ Correct layer tags: domain/entity, domain/service, application/use_case, application/repository_interface, application/adapter_interface, infrastructure/repository, infrastructure/adapter, infrastructure/model, presentation/schema\n"
+            "✓ Naming conventions: PascalCase classes, snake_case methods/attributes\n"
+            "✓ Repository naming: I<Entity>Repository → <Tech><Entity>Repository\n"
+            "✓ Adapter naming: I<Capability>Adapter → <Tech><Capability>Adapter\n\n"
+            "FIXES TO APPLY:\n"
+            "• Consolidate duplicate classes with same name into single unified class\n"
+            "• Merge attributes from all instances of same entity (e.g., all Order classes)\n"
+            "• Merge methods from all instances of same interface/repository\n"
+            "• Ensure Use Cases only have 'execute()' as public method\n"
+            "• Add missing inheritance relationships for implementations\n"
+            "• Remove cross-cutting concerns (auth, logging, HTTP handling)\n"
+            "• Fix incorrect layer assignments\n"
+            "• PRESERVE all Use Cases - each feature needs its own Use Case\n"
+            "• Create unified domain model that supports all features\n"
+            "• ENHANCE Use Case method descriptions with detailed execution logic:\n"
+            "  - Step-by-step validation process\n"
+            "  - Specific domain method calls\n"
+            "  - Repository interaction sequence\n"
+            "  - Business rule enforcement\n"
+            "  - Error handling and edge cases\n"
+            "  Example: 'Validates request.order_id exists, fetches order via repository.get_by_id(), checks order.status == \"pending\", calls order.assign_to_staff(staff_id), validates assignment via order.validate_assignment(), calls order.confirm(), saves via repository.update(), logs confirmation via audit_repository.log_confirmation(), returns ConfirmOrderResponse with order details'\n\n"
+            "DEPENDENCY RULE ENFORCEMENT:\n"
+            "Domain → Application → Infrastructure → Presentation\n"
+            "Inner layers NEVER depend on outer layers.\n\n"
+            "Return ONLY the corrected ClassDefinition list."
         ),
     )
 
@@ -369,7 +431,7 @@ class ClassParser:
         self.dataflow_to_class = dataflow_to_class_agent(model_name)
         self.verify_classes = verify_classes_agent(model_name)
 
-    async def process(self, prd_text: str) -> List[Dict]:
+    async def process(self, prd_text: str) -> str:
         """
         Extract necessary classes that implement PRD requirements.
 
@@ -389,14 +451,22 @@ class ClassParser:
         project_description = user_flows_output.project_description
         logger.info(f"Generated {len(user_flows)} user flows")
         print(f"Generated {len(user_flows)} user flows")
+        with open("projects/warehouse/user_flows.json", "w", encoding="utf-8") as f:
+            json.dump([uf.model_dump() for uf in user_flows], f)
         feature_classes = []
         for uf in user_flows:
             logger.info(f"Converting userflow to dataflow for feature: {uf.feature}")
             print(f"Converting userflow to dataflow for feature: {uf.feature}")
             uf_info = f"Project Description: {project_description}\nUser Flow: {uf.model_dump()}"
-            data_flow = (
+            data_flow: DataFlow = (
                 await self.userflow_to_dataflow.run(uf_info)
             ).output.model_dump()
+            with open(
+                f"projects/warehouse/data_flows/{uf.feature}.json",
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(data_flow, f)
             logger.info(f"Converting dataflow to classes for feature: {uf.feature}")
             print(f"Converting dataflow to classes for feature: {uf.feature}")
             classes = (await self.dataflow_to_class.run(str(data_flow))).output
@@ -411,18 +481,27 @@ class ClassParser:
                     "classes": classes,
                 }
             )
+        with open(
+            "projects/warehouse/feature_classes.json", "w", encoding="utf-8"
+        ) as f:
+            json.dump(feature_classes, f)
         logger.info("Verifying classes")
         print("Verifying classes")
         verified_classes = (await self.verify_classes.run(str(feature_classes))).output
         # convert verified_classes to json
         verified_classes = [class_item.model_dump() for class_item in verified_classes]
+        with open(
+            "projects/warehouse/verified_classes.json", "w", encoding="utf-8"
+        ) as f:
+            json.dump(verified_classes, f)
+        verified_classes = json.dumps(verified_classes)
         return verified_classes
 
 
 # Example usage
 async def main():
     """Main function to run the class parser pipeline."""
-    prd_path = "projects/warehouse/prd_text.md"
+    prd_path = "projects/warehouse/PRD.md"
 
     if not os.path.exists(prd_path):
         logger.error(f"PRD file not found: {prd_path}")
@@ -433,13 +512,26 @@ async def main():
 
     parser = ClassParser()
     print("\n=== Full Pipeline Output ===")
-    output = await parser.process(prd_text)
-    with open("projects/warehouse/classes.json", "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, indent=4)
+    await parser.process(prd_text)
+    # with open("projects/warehouse/classes.json", "w", encoding="utf-8") as f:
+    #     json.dump(output, f, ensure_ascii=False, indent=4)
     print("Final output saved to projects/warehouse/classes.json")
+
+
+async def main_verify_classes():
+    class_verifier = verify_classes_agent()
+    print("\n=== Full Pipeline Output ===")
+    feature_classes = json.load(
+        open("projects/warehouse/feature_classes.json", "r", encoding="utf-8")
+    )
+    verified_classes = (await class_verifier.run(str(feature_classes))).output
+    verified_classes = [class_item.model_dump() for class_item in verified_classes]
+    with open("projects/warehouse/verified_classes.json", "w", encoding="utf-8") as f:
+        json.dump(verified_classes, f, ensure_ascii=False, indent=4)
+    print("Final output saved to projects/warehouse/verified_classes.json")
 
 
 if __name__ == "__main__":
     import asyncio
 
-    asyncio.run(main())
+    asyncio.run(main_verify_classes())
