@@ -25,7 +25,10 @@ It covers: General rules, directory map, step-by-step workflow, and code samples
   - `interfaces/` (ports: LLM/Media/Vector/Repo/Queue…)
   - `use_cases/` (orchestrate logic)
 - Infrastructure: `backend/app/infrastructure/`
-  - `database/`, `llm/`, `media/`, `payments/`, `vectorstores/`, `pipelines/steps/`, `repositories/`, `jobs/`
+  - `database/`
+  - `repositories/`
+  - `adapters/`,
+  - `models/`
 - Presentation: `backend/app/presentation/`
   - `api/v1/dependencies/`, `api/v1/routers/`, `main.py`
 - Config: `backend/app/core/config.py`
@@ -38,7 +41,7 @@ It covers: General rules, directory map, step-by-step workflow, and code samples
 3. Layered design: adjust Domain rules if needed; define Application interfaces; Use Case orchestration.
 4. Create interfaces in `application/interfaces/` (LLM/Media/Vector/Repo…). (see: [Step 2 – Application](#step-2-application-layer-orchestrate-use-cases-and-interfaces))
 5. Implement Use Cases in `application/use_cases/` (no direct SDK calls). (see: [Step 2 – Application](#step-2-application-layer-orchestrate-use-cases-and-interfaces))
-6. Create Infrastructure adapters (can stub first) under `infrastructure/…`. (see: [Step 3 – Infrastructure](#step-3-infrastructure-layer-persistence-external-adapters-pipelines))
+6. Create Infrastructure Repositories/Adapters (can stub first) under `infrastructure/…`. (see: [Step 3 – Infrastructure](#step-3-infrastructure-layer-persistence-external-adapters-pipelines))
 7. Wire DI in `presentation/api/v1/dependencies/` and routers in `presentation/api/v1/routers/`, register in `presentation/main.py`. (see: [Step 4 – Presentation](#step-4-presentation-layer-api-endpoints))
 8. Configure in `core/config.py` (API keys/model/timeout); add env.
 9. Data & Migrations (if any) with Alembic (run inside venv).
@@ -114,7 +117,7 @@ class Product(BaseModel):
 from abc import ABC, abstractmethod
 from app.domain.entities.product import Product
 
-class ProductRepositoryInterface(ABC):
+class IProductRepository(ABC):
     @abstractmethod
     def create(self, product: Product) -> Product: ...
     @abstractmethod
@@ -123,11 +126,11 @@ class ProductRepositoryInterface(ABC):
     def get_all(self) -> list[Product]: ...
 
 # backend/app/application/use_cases/product.py
-from app.application.interfaces.product import ProductRepositoryInterface
+from app.application.interfaces.product import IProductRepository
 from app.domain.entities.product import Product
 
 class CreateProductUseCase:
-    def __init__(self, repo: ProductRepositoryInterface):
+    def __init__(self, repo: IProductRepository):
         self.repo = repo
     def execute(self, name: str, category: str, price_range: str) -> Product:
         return self.repo.create(Product(id=0, name=name, category=category, price_range=price_range))
@@ -139,7 +142,7 @@ class CreateProductUseCase:
   - Covers persistence (models, repositories, Alembic migrations), concrete external adapters (SDKs/HTTP/queues), and pipeline storage/observability.
 - Actions (split by concern):
   - Persistence (DB): Define SQLAlchemy models under `backend/app/infrastructure/models/`; implement repositories mapping domain entities to models; create/run Alembic migrations.
-  - External Adapters: Implement clients under `backend/app/infrastructure/{payments|llm|media|vectorstores}/` with retries/backoff, timeouts, idempotency; wire via FastAPI dependencies.
+  - External Adapters: Implement clients under `backend/app/infrastructure/adapters/` with retries/backoff, timeouts, idempotency; wire via FastAPI dependencies.
   - Pipeline: Add storage models for `pipeline_runs`, `pipeline_steps`, `pipeline_artifacts` and repositories; compose steps and run via `SimplePipeline`; persist progress when durability is required.
 
 Implementation guide
@@ -171,11 +174,11 @@ Implementation guide
   ```python
   # backend/app/infrastructure/repositories/product.py (simplified)
   from sqlalchemy.orm import Session
-  from app.application.interfaces.product import ProductRepositoryInterface
+  from app.application.interfaces.product import IProductRepository
   from app.domain.entities.product import Product
   from app.infrastructure.models import ProductModel  # example
 
-  class ProductRepository(ProductRepositoryInterface):
+  class ProductRepository(IProductRepository):
       def __init__(self, db: Session):
           self.db = db
       def create(self, product: Product) -> Product:
@@ -186,17 +189,24 @@ Implementation guide
 
   Note: `ProductModel` and module `app.infrastructure.models` are illustrative. Adjust imports/model names to match your actual codebase.
 
-- External Adapters (SDKs/HTTP/Queues)
+- External Adapters — Common Guidelines (SDKs/HTTP/Queues)
 
-  - Implement concrete adapters for `PaymentGateway`, LLM/Media clients, vectorstores, queues.
-  - Add reliability: retries/backoff, circuit breaker, request timeouts. Ensure idempotency for create-like operations (idempotency keys or input hashing).
-  - Webhooks: validate signatures in Presentation; optionally persist webhook receipts to a `webhook_events` table (model + migration) and process via a use case.
+  - Location: put adapters in `backend/app/infrastructure/adapters/` (one file per service).
+  - Contract: implement an Application interface (e.g., `IPaymentGateway`, `ITranscriber`). No domain/application imports in adapters.
+  - Config: read from `app/core/config.py` (env-driven). Do not hardcode secrets.
+  - Reliability: add retries with backoff, request timeouts, and (optionally) circuit breaker for flaky upstreams.
+  - Idempotency: for create-like ops, require an idempotency key or derive one from inputs to avoid duplicates.
+  - Errors: catch SDK exceptions; re-raise clean `RuntimeError`/custom errors with actionable messages. Log with contextual metadata.
+  - Types: return plain dicts/DTOs, not raw SDK objects. Keep small, serializable payloads.
+  - Webhooks: verify signatures in Presentation using the adapter’s helper (e.g., `construct_webhook_event`). Consider persisting raw receipts to `webhook_events`.
+  - DI: expose factories in `presentation/api/v1/dependencies/` for injection into endpoints/use cases.
+  - Testing: provide lightweight fakes in tests; ensure adapters can be replaced via `app.dependency_overrides`.
 
   Example (init via settings)
 
   ```python
   # backend/app/presentation/api/v1/dependencies/payment.py (essentials)
-  from app.infrastructure.payments.stripe_client import StripeClient
+  from app.infrastructure.adapters.payment import StripeClient
   from app.core.config import settings
 
   def get_payment_gateway():
@@ -216,11 +226,11 @@ Implementation guide
   ```python
   # backend/app/infrastructure/pipelines/steps/transcribe_step.py (example)
   from typing import Dict, Any
-  from app.application.interfaces.media import Transcriber
+  from app.application.interfaces.media import ITranscriber
 
   class TranscribeStep:
       name = "transcribe"
-      def __init__(self, transcriber: Transcriber):
+      def __init__(self, transcriber: ITranscriber):
           self.transcriber = transcriber
       def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
           context["text"] = self.transcriber.transcribe(context["audio_path"])
@@ -238,7 +248,7 @@ Implementation guide
 
   ```python
   # backend/app/presentation/api/v1/dependencies/media.py (essentials)
-  from app.infrastructure.media.whisper_transcriber import WhisperTranscriber
+  from app.infrastructure.adapters.transcriber import WhisperTranscriber
 
   def get_transcriber():
       return WhisperTranscriber()
@@ -284,7 +294,7 @@ def get_product_repo(db: Session = Depends(get_db)):
 from fastapi import APIRouter, Depends
 from app.application.use_cases.product import CreateProductUseCase
 from app.presentation.api.v1.dependencies.product import get_product_repo
-from app.presentation.api.v1.schemas.product import CreateProductRequest, ProductResponse
+from app.presentation.api/v1.schemas.product import CreateProductRequest, ProductResponse
 
 router = APIRouter()
 
@@ -294,12 +304,12 @@ def create_product(request: CreateProductRequest, repo = Depends(get_product_rep
     return ProductResponse.model_validate(product)
 
 # Payments (Stripe)
-from app.presentation.api.v1.dependencies.payment import get_payment_gateway
-from app.presentation.api.v1.schemas.payment import CreatePaymentIntentRequest, PaymentIntentResponse
-from app.application.interfaces.payments import PaymentGateway
+from app.presentation.api/v1.dependencies.payment import get_payment_gateway
+from app.presentation.api/v1.schemas.payment import CreatePaymentIntentRequest, PaymentIntentResponse
+from app.application.interfaces.payments import IPaymentGateway
 
 @router.post("/payments/intents", response_model=PaymentIntentResponse)
-def create_payment_intent(body: CreatePaymentIntentRequest, gateway: PaymentGateway = Depends(get_payment_gateway)):
+def create_payment_intent(body: CreatePaymentIntentRequest, gateway: IPaymentGateway = Depends(get_payment_gateway)):
   data = gateway.create_payment_intent(body.amount_cents, body.currency or "", body.metadata)
   return PaymentIntentResponse(**data)
 ```
@@ -341,17 +351,17 @@ Webhook (Stripe):
 # backend/app/presentation/api/v1/routers/payment.py (add webhook)
 from fastapi import APIRouter, Depends, Request, HTTPException
 from app.core.config import settings
-from app.application.interfaces.payments import PaymentGateway
-from app.presentation.api.v1.dependencies.payment import get_payment_gateway
+from app.application.interfaces.payments import IPaymentGateway
+from app.presentation.api/v1.dependencies.payment import get_payment_gateway
 
 router = APIRouter()
 
 @router.post("/webhook")
-async def stripe_webhook(request: Request, gateway: PaymentGateway = Depends(get_payment_gateway)):
-    payload = await request.body()
+async def stripe_webhook(request: Request, gateway: IPaymentGateway = Depends(get_payment_gateway)):
+    payload = await request.body()  # bytes
     sig_header = request.headers.get("stripe-signature", "")
     try:
-        event = gateway.construct_event(payload.decode(), sig_header, settings.STRIPE_WEBHOOK_SECRET)
+        event = gateway.construct_webhook_event(payload, sig_header)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -454,11 +464,11 @@ async def test_create_payment_intent(monkeypatch):
     ```python
     # app/application/interfaces/pipeline.py
     from typing import Protocol, Any, Dict
-    class PipelineStep(Protocol):
+    class IPipelineStep(Protocol):
         name: str
         def run(self, context: Dict[str, Any]) -> Dict[str, Any]: ...
-    class Pipeline(Protocol):
-        steps: list[PipelineStep]
+    class IPipeline(Protocol):
+        steps: list[IPipelineStep]
         def execute(self, context: Dict[str, Any]) -> Dict[str, Any]: ...
     ```
   - Orchestrator use case (`application/use_cases/run_pipeline.py`) composes steps sequentially.

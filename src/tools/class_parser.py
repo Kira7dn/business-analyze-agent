@@ -159,14 +159,16 @@ class ClassDefinition(BaseModel):
         description=(
             "Deterministic architectural layer tag of the class. One of: "
             "'domain/entity', 'domain/service', "
-            "'application/use_case', 'application/repository_interface', 'application/adapter_interface', "
-            "'infrastructure/repository', 'infrastructure/adapter', 'infrastructure/model', "
-            "'presentation/schema'."
+            "'application/interface', 'application/use_case', "
+            "'infrastructure/model', 'infrastructure/repository', 'infrastructure/adapter', "
+            "'presentation/schema', 'presentation/dependency', 'presentation/router'."
         )
     )
-    inheritance: Optional[List[str]] = Field(
+    dependencies: Optional[List[str]] = Field(
         default_factory=list,
-        description="List of interfaces or base classes this class implements/extends (e.g., ['IOrderRepository', 'BaseRepository']).",
+        description=(
+            "List of interface names this class depends on (e.g., ['IOrderRepository', 'IPaymentAdapter'])."
+        ),
     )
     description: str = Field(
         description="Description of the class's purpose and role within the architecture."
@@ -186,10 +188,10 @@ class ClassDefinition(BaseModel):
         json_schema_extra = {
             "example": {
                 "class_name": "SQLOrderRepository",
-                "inheritance": ["IOrderRepository"],
                 "layer": "infrastructure/repository",
                 "description": "Implements IOrderRepository using SQLAlchemy with PostgreSQL.",
                 "attributes": ["db: Session"],
+                "dependencies": ["IOrderRepository"],
                 "methods": [
                     {
                         "method_name": "save",
@@ -323,13 +325,18 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
         retries=3,
         model_settings=settings,
         system_prompt=(
-            "You are a backend architect specializing in Onion/Clean Architecture. Design minimal OOP classes from the DataFlow that strictly follow the dependency rule: Domain → Application → Infrastructure → Presentation.\n\n"
+            "You are a backend architect specializing in Onion/Clean Architecture. Design minimal OOP classes from the DataFlow.\n\n"
             "CRITICAL RULES:\n"
-            "1. Use Case MUST have exactly ONE public method named 'execute'\n"
-            "2. Domain entities have NO I/O operations (no save, fetch, etc.)\n"
-            "3. Application layer depends ONLY on interfaces, never implementations\n"
-            "4. Infrastructure implements Application interfaces\n"
-            "5. Use exact layer tags: 'domain/entity', 'domain/service', 'application/use_case', 'application/repository_interface', 'application/adapter_interface', 'infrastructure/repository', 'infrastructure/adapter', 'infrastructure/model', 'presentation/schema'\n\n"
+            "1. Inner layers must NOT depend on outer layers (inward dependency rule).\n"
+            "2. Presentation depends on Application; Application depends on Domain; Infrastructure implements Application interfaces.\n"
+            "3. Domain entities have NO I/O operations (no save, fetch, etc.).\n"
+            "4. Application layer depends ONLY on interfaces (ports), never implementations.\n"
+            "5. Infrastructure implements Application interfaces.\n\n"
+            "FORMAT:\n"
+            "- class_name: PascalCase\n"
+            "- attributes/methods: snake_case\n"
+            "- dependencies: list of interface names this class depends on (e.g., ['IOrderRepository', 'IPaymentAdapter'])\n"
+            "- layer: exact tags from: 'domain/entity', 'domain/service', 'application/interface', 'application/use_case', 'infrastructure/model', 'infrastructure/repository', 'infrastructure/adapter', 'presentation/schema', 'presentation/router', 'presentation/dependency'\n\n"
             "LAYER SPECIFICATIONS:\n"
             "Domain Layer:\n"
             "• Entities (domain/entity): Business objects with intrinsic behaviors only. NO persistence methods.\n"
@@ -343,19 +350,26 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
             "  - Business logic sequence (order of operations)\n"
             "  - Error handling scenarios\n"
             "  Example: 'Validates request.items not empty, creates Order entity via Order.create(), validates business rules via order.validate_new(), saves via repository.save(), logs audit via audit_repository.log(), returns CreateOrderResponse with order.id'\n"
-            "• Repository Interface (application/repository_interface): Abstract persistence. Name: I<Entity>Repository. No attributes.\n"
-            "• Adapter Interface (application/adapter_interface): Abstract external services. Name: I<Capability>Adapter. No attributes.\n"
+            "• Interface (application/interface): Abstract ports for repositories/adapters. No attributes.\n"
             "Infrastructure Layer:\n"
-            "• Repository (infrastructure/repository): Implements repository interface. Name: <Tech><Entity>Repository. Set inheritance field.\n"
-            "• Adapter (infrastructure/adapter): Implements adapter interface. Name: <Tech><Capability>Adapter. Set inheritance field.\n"
-            "• Model (infrastructure/model): ORM mapping only. No business logic.\n"
+            "• Repository (infrastructure/repository): Implements application interfaces.\n"
+            "• Adapter (infrastructure/adapter): Implements application interfaces.\n"
+            "• Model (infrastructure/model): ORM/database mapping classes. Mirror Domain entities structure but focused on persistence. No business logic.\n"
+            ""
             "Presentation Layer:\n"
-            "• Schema (presentation/schema): Request/Response DTOs. No methods.\n\n"
-            "FORMAT:\n"
-            "- class_name: PascalCase\n"
-            "- attributes/methods: snake_case\n"
-            "- inheritance: list of interface names for implementations (e.g., ['IOrderRepository'])\n"
-            "- Generate only classes needed for this specific DataFlow\n"
+            "• Schema (presentation/schema): Request/Response DTOs. No methods.\n"
+            "• Router (presentation/router): HTTP endpoint handlers. Each method accepts Request DTO + repository providers as parameters, instantiates Use Case internally, calls execute(request), returns Response DTO. Do NOT store Use Cases as attributes.\n"
+            "• Dependency (presentation/dependency): Builders/factories exposing repositories ONLY for DI. Expose provider-style functions for repositories with interface return types (e.g., get_*_repository() -> I*Repository).\n\n"
+            "Example Router method:\n"
+            "def create_order_endpoint(request: CreateOrderRequest, order_repo: IOrderRepository):\n"
+            "    use_case = CreateOrderUseCase(order_repo)\n"
+            "    return use_case.execute(request)\n\n"
+            "ROUTER METHOD DESCRIPTION TEMPLATE (MANDATORY):\n"
+            "Each Router method's 'description' MUST follow exactly this 3-line template so codegen can parse it:\n"
+            "[HTTP] <METHOD> <PATH>\n"
+            "Response: <ResponseDTO> (status=<CODE>)\n"
+            "Behavior: Instantiate <UseCaseClass>(deps...) and execute(request)\n\n"
+            "Generate only classes needed for this specific DataFlow.\n"
         ),
     )
 
@@ -383,34 +397,33 @@ def verify_classes_agent(model_name: str = "openai:o4-mini"):
         system_prompt=(
             "You are a Clean Architecture validator. Verify and fix class designs to strictly follow Onion Architecture principles from the guide.\n\n"
             "VALIDATION CHECKLIST:\n"
-            "✓ Each Use Case has exactly ONE public method named 'execute'\n"
+            "✓ Use Cases have exactly ONE public method named 'execute'\n"
             "✓ Domain entities contain NO I/O operations (save, fetch, load, etc.)\n"
             "✓ Application layer depends ONLY on interfaces (I-prefixed)\n"
             "✓ Infrastructure classes implement their corresponding interfaces\n"
-            "✓ Correct layer tags: domain/entity, domain/service, application/use_case, application/repository_interface, application/adapter_interface, infrastructure/repository, infrastructure/adapter, infrastructure/model, presentation/schema\n"
-            "✓ Naming conventions: PascalCase classes, snake_case methods/attributes\n"
+            "✓ Correct layer tags and naming conventions (PascalCase classes, snake_case methods)\n"
+            "✓ Layers must use: application/interface, application/use_case, infrastructure/model, infrastructure/repository, infrastructure/adapter, presentation/schema, presentation/dependency, presentation/router\n"
             "✓ Repository naming: I<Entity>Repository → <Tech><Entity>Repository\n"
             "✓ Adapter naming: I<Capability>Adapter → <Tech><Capability>Adapter\n\n"
             "FIXES TO APPLY:\n"
-            "• Consolidate duplicate classes with same name into single unified class\n"
-            "• Merge attributes from all instances of same entity (e.g., all Order classes)\n"
-            "• Merge methods from all instances of same interface/repository\n"
-            "• Ensure Use Cases only have 'execute()' as public method\n"
-            "• Add missing inheritance relationships for implementations\n"
+            "• Consolidate duplicate classes: merge attributes/methods from all instances of same class\n"
+            "• Ensure 'dependencies' lists interface names required by the class; add if missing\n"
             "• Remove cross-cutting concerns (auth, logging, HTTP handling)\n"
             "• Fix incorrect layer assignments\n"
             "• PRESERVE all Use Cases - each feature needs its own Use Case\n"
             "• Create unified domain model that supports all features\n"
-            "• ENHANCE Use Case method descriptions with detailed execution logic:\n"
-            "  - Step-by-step validation process\n"
-            "  - Specific domain method calls\n"
-            "  - Repository interaction sequence\n"
-            "  - Business rule enforcement\n"
-            "  - Error handling and edge cases\n"
-            "  Example: 'Validates request.order_id exists, fetches order via repository.get_by_id(), checks order.status == \"pending\", calls order.assign_to_staff(staff_id), validates assignment via order.validate_assignment(), calls order.confirm(), saves via repository.update(), logs confirmation via audit_repository.log_confirmation(), returns ConfirmOrderResponse with order details'\n\n"
+            "• Ensure Presentation Routers: endpoint methods accept repository providers as parameters and instantiate Use Case internally\n"
+            "• Dependency providers must expose get_*_repository methods ONLY (no get_*_use_case) and return interface types (e.g., get_product_repo(...) -> IProductRepository)\n"
+            "• Enforce Router method description template:\n"
+            "  [HTTP] <METHOD> <PATH>\n"
+            "  Response: <ResponseDTO> (status=<CODE>)\n"
+            "  Behavior: Instantiate <UseCaseClass>(deps...) and execute(request)\n"
+            "  Example: def create_order_endpoint(request: CreateOrderRequest, order_repo: IOrderRepository):\n"
+            "• ENHANCE Use Case descriptions with detailed execution logic (validation, domain calls, repository interactions, business rules, error handling)\n"
+            "  Example: 'Validates request.order_id exists, fetches order via repository.get_by_id(), checks order.status == \"pending\", calls order.confirm(), saves via repository.update(), returns ConfirmOrderResponse'\n\n"
             "DEPENDENCY RULE ENFORCEMENT:\n"
-            "Domain → Application → Infrastructure → Presentation\n"
-            "Inner layers NEVER depend on outer layers.\n\n"
+            "Presentation depends on Application; Application depends on Domain; Infrastructure implements Application interfaces.\n"
+            "Inner layers NEVER depend on outer layers (inward dependency rule).\n\n"
             "Return ONLY the corrected ClassDefinition list."
         ),
     )
