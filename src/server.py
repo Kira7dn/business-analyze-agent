@@ -159,7 +159,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             return [
                 TextContent(
                     type="text",
-                    text="✅ Business Analyze Agent MCP Server is running!\n\nAvailable tools:\n- analyze_requirements\n- evaluate_requirements\n- generate_questions\n- health_check",
+                    text="✅ Business Analyze Agent MCP Server is running!",
                 )
             ]
 

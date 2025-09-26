@@ -1,20 +1,23 @@
 """
-User Story Parser: LLM pipeline to convert PRD -> User Flow -> Data Flow -> Function Spec
+Backend Object Parser: LLM pipeline to convert PRD -> User Flow -> Clean Architecture classes.
 
 This module uses PydanticAI to define agents that process a Product Requirements Document
-through multiple transformation stages to generate function specifications.
+through multiple transformation stages to generate backend class definitions.
 
 The pipeline follows these steps:
 1. Convert PRD text to UserFlow objects
-2. Convert UserFlow to DataFlow
-3. Convert DataFlow to FunctionSpec
+2. Convert each UserFlow directly into Clean Architecture class definitions
+3. Verify and normalize the resulting classes against `be_schema.json`
 """
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import json
 import logging
 import sys
 import os
+
+import jsonschema
+
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIResponsesModelSettings
@@ -92,37 +95,6 @@ class UserFlowOutput(BaseModel):
         }
 
 
-class DataFlow(BaseModel):
-    """Data flow for a feature."""
-
-    project_description: str = Field(description="Project description.")
-    feature: str = Field(description="Name of the feature (e.g., 'OrderConfirmation').")
-    actor: str = Field(description="Name of the actor (e.g., 'Warehouse staff').")
-    description: str = Field(
-        description="Overall description of the data flow in 2-3 sentences."
-    )
-    data_flow_steps: List[str] = Field(
-        default_factory=list,
-        description="List of backend data operations in VerbNoun format (e.g., 'ValidateOrder', 'SaveCustomer'). Each step maps to a method call in the Use Case execute() method.",
-    )
-
-    class Config:
-        """Configuration for the DataFlow model."""
-
-        json_schema_extra = {
-            "example": {
-                "project_description": "Build a web application for order management that helps warehouse staff process at least 1,000 orders per day with an average response time of ≤ 150ms.",
-                "feature": "OrderConfirmation",
-                "actor": "Warehouse staff",
-                "description": "Handles the process of collecting, validating, and storing new user registration data",
-                "data_flow_steps": [
-                    "ValidateUserInput: Validates that user input meets requirements",
-                    "StoreUserInDatabase: Stores user data in the database",
-                ],
-            }
-        }
-
-
 class MethodSpec(BaseModel):
     """Function/backend interface specification for a data flow."""
 
@@ -154,7 +126,13 @@ class MethodSpec(BaseModel):
 class ClassDefinition(BaseModel):
     """Class definition for a feature."""
 
-    class_name: str = Field(description="Name of the class in PascalCase format.")
+    name: str = Field(description="Name of the class in PascalCase format.")
+    type: Optional[str] = Field(
+        default=None,
+        description=(
+            "Architectural classification tag mirroring layer (e.g., 'domain/entity', 'application/use_case')."
+        ),
+    )
     layer: str = Field(
         description=(
             "Deterministic architectural layer tag of the class. One of: "
@@ -170,6 +148,10 @@ class ClassDefinition(BaseModel):
             "List of interface names this class depends on (e.g., ['IOrderRepository', 'IPaymentAdapter'])."
         ),
     )
+    properties: Optional[Dict[str, str]] = Field(
+        default_factory=dict,
+        description="Optional key:value map of property name to type.",
+    )
     description: str = Field(
         description="Description of the class's purpose and role within the architecture."
     )
@@ -181,13 +163,17 @@ class ClassDefinition(BaseModel):
         default_factory=list,
         description="List of methods in MethodSpec format.",
     )
+    metadata: Optional[Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Additional structured information (contracts, DTOs, endpoint details, etc.).",
+    )
 
     class Config:
         """Configuration for the ClassDefinition model."""
 
         json_schema_extra = {
             "example": {
-                "class_name": "SQLOrderRepository",
+                "name": "SQLOrderRepository",
                 "layer": "infrastructure/repository",
                 "description": "Implements IOrderRepository using SQLAlchemy with PostgreSQL.",
                 "attributes": ["db: Session"],
@@ -255,64 +241,15 @@ def prd_to_userflow_agent(model_name: str = "openai:o4-mini"):
     )
 
 
-def userflow_to_dataflow_agent(model_name: str = "openai:o4-mini"):
+def userflow_to_class_agent(model_name: str = "openai:o4-mini"):
     """
-    Create an agent to convert UserFlow to DataFlow.
+    Create an agent to convert UserFlow context directly into Clean Architecture classes.
 
     Args:
         model_name: The name of the LLM model to use
 
     Returns:
-        Agent configured to convert UserFlow to DataFlow
-    """
-    settings = OpenAIResponsesModelSettings(
-        openai_reasoning_effort="low",
-        openai_reasoning_summary="detailed",
-        temperature=0.2,
-    )
-    return Agent(
-        model_name,
-        output_type=DataFlow,
-        model_settings=settings,
-        retries=3,
-        system_prompt=(
-            "You are a backend architect specializing in Clean Architecture DataFlow design. Convert User Flow to DataFlow that maps 1:1 to a Use Case with single 'execute()' method.\n\n"
-            "DATAFLOW = USE CASE MAPPING:\n"
-            "• DataFlow input parameters → Use Case execute() parameters\n"
-            "• DataFlow output → Use Case execute() return type\n"
-            "• DataFlow steps → orchestration logic inside execute()\n\n"
-            "STEP NAMING RULES:\n"
-            "• Use VerbNoun format (e.g., 'ValidateOrder', 'SaveCustomer', 'SendEmail')\n"
-            "• Each step maps to either:\n"
-            "  - Domain entity method (intrinsic behavior)\n"
-            "  - Repository interface method (persistence)\n"
-            "  - Adapter interface method (external service)\n"
-            "• NO UI, auth, logging, DI, or cross-cutting concerns\n"
-            "• Steps must be backend data operations only\n\n"
-            "CONSTRAINTS:\n"
-            "• Include ONLY steps necessary for the User Flow\n"
-            "• No optimization or 'nice-to-have' steps\n"
-            "• Each step should be implementable as a single method call\n"
-            "• Steps should follow business logic sequence\n\n"
-            "OUTPUT FORMAT:\n"
-            "- project_description: from input\n"
-            "- feature: PascalCase feature name\n"
-            "- actor: from User Flow\n"
-            "- description: 2-3 sentences explaining the DataFlow purpose\n"
-            "- data_flow_steps: minimal list of VerbNoun operations\n"
-        ),
-    )
-
-
-def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
-    """
-    Create an agent to convert DataFlow to ClassOutput.
-
-    Args:
-        model_name: The name of the LLM model to use
-
-    Returns:
-        Agent configured to convert DataFlow to ClassOutput
+        Agent configured to convert UserFlow to ClassOutput
     """
     settings = OpenAIResponsesModelSettings(
         openai_reasoning_effort="low",
@@ -325,7 +262,7 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
         retries=3,
         model_settings=settings,
         system_prompt=(
-            "You are a backend architect specializing in Onion/Clean Architecture. Design minimal OOP classes from the DataFlow.\n\n"
+            "You are a backend architect specializing in Onion/Clean Architecture. Given project description and a single User Flow (feature, actor, sequential steps), design the minimal set of classes required to fulfill that flow.\n\n"
             "CRITICAL RULES:\n"
             "1. Inner layers must NOT depend on outer layers (inward dependency rule).\n"
             "2. Presentation depends on Application; Application depends on Domain; Infrastructure implements Application interfaces.\n"
@@ -333,7 +270,7 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
             "4. Application layer depends ONLY on interfaces (ports), never implementations.\n"
             "5. Infrastructure implements Application interfaces.\n\n"
             "FORMAT:\n"
-            "- class_name: PascalCase\n"
+            "- name: PascalCase\n"
             "- attributes/methods: snake_case\n"
             "- dependencies: list of interface names this class depends on (e.g., ['IOrderRepository', 'IPaymentAdapter'])\n"
             "- layer: exact tags from: 'domain/entity', 'domain/service', 'application/interface', 'application/use_case', 'infrastructure/model', 'infrastructure/repository', 'infrastructure/adapter', 'presentation/schema', 'presentation/router', 'presentation/dependency'\n\n"
@@ -342,7 +279,7 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
             "• Entities (domain/entity): Business objects with intrinsic behaviors only. NO persistence methods.\n"
             "• Services (domain/service): Pure business algorithms. May depend on other domain services.\n"
             "Application Layer:\n"
-            "• Use Case (application/use_case): Orchestrates DataFlow steps via interfaces. Single 'execute()' method maps 1:1 to DataFlow input/output. Dependencies are injected interfaces.\n"
+            "• Use Case (application/use_case): Orchestrates flow steps via interfaces. Derive execute() parameters from User Flow inputs, outputs from effects. Dependencies are injected interfaces.\n"
             "  IMPORTANT: Method descriptions must include detailed step-by-step execution logic:\n"
             "  - Validation steps (what to validate and how)\n"
             "  - Domain method calls (which entity/service methods to call)\n"
@@ -350,16 +287,15 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
             "  - Business logic sequence (order of operations)\n"
             "  - Error handling scenarios\n"
             "  Example: 'Validates request.items not empty, creates Order entity via Order.create(), validates business rules via order.validate_new(), saves via repository.save(), logs audit via audit_repository.log(), returns CreateOrderResponse with order.id'\n"
-            "• Interface (application/interface): Abstract ports for repositories/adapters. No attributes.\n"
+            "• Interface (application/interface): Abstract ports for repositories/adapters. metadata.contract must document every method signature.\n"
             "Infrastructure Layer:\n"
-            "• Repository (infrastructure/repository): Implements application interfaces.\n"
-            "• Adapter (infrastructure/adapter): Implements application interfaces.\n"
-            "• Model (infrastructure/model): ORM/database mapping classes. Mirror Domain entities structure but focused on persistence. No business logic.\n"
-            ""
+            "• Repository (infrastructure/repository): Implements application interfaces. metadata.storage or metadata.endpoint/method/payload_schema must be populated.\n"
+            "• Adapter (infrastructure/adapter): Implements application interfaces, metadata must describe external capability (endpoint, method, payload).\n"
+            "• Model (infrastructure/model): ORM/database mapping classes. Provide properties or metadata.fields mapping persistence columns.\n"
             "Presentation Layer:\n"
-            "• Schema (presentation/schema): Request/Response DTOs. No methods.\n"
+            "• Schema (presentation/schema): Request/Response DTOs. metadata.fields must enumerate fields with types.\n"
             "• Router (presentation/router): HTTP endpoint handlers. Each method accepts Request DTO + repository providers as parameters, instantiates Use Case internally, calls execute(request), returns Response DTO. Do NOT store Use Cases as attributes.\n"
-            "• Dependency (presentation/dependency): Builders/factories exposing repositories ONLY for DI. Expose provider-style functions for repositories with interface return types (e.g., get_*_repository() -> I*Repository).\n\n"
+            "• Dependency (presentation/dependency): Builders/factories exposing repositories ONLY for DI. metadata.providers must list provider functions returning interfaces.\n\n"
             "Example Router method:\n"
             "def create_order_endpoint(request: CreateOrderRequest, order_repo: IOrderRepository):\n"
             "    use_case = CreateOrderUseCase(order_repo)\n"
@@ -369,7 +305,7 @@ def dataflow_to_class_agent(model_name: str = "openai:o4-mini"):
             "[HTTP] <METHOD> <PATH>\n"
             "Response: <ResponseDTO> (status=<CODE>)\n"
             "Behavior: Instantiate <UseCaseClass>(deps...) and execute(request)\n\n"
-            "Generate only classes needed for this specific DataFlow.\n"
+            "Generate only classes needed for this specific User Flow. Ensure all schema fields (properties, attributes, metadata) are populated meaningfully.\n"
         ),
     )
 
@@ -395,36 +331,32 @@ def verify_classes_agent(model_name: str = "openai:o4-mini"):
         retries=3,
         model_settings=settings,
         system_prompt=(
-            "You are a Clean Architecture validator. Verify and fix class designs to strictly follow Onion Architecture principles from the guide.\n\n"
+            "You are a Clean Architecture validator. Verify and fix class designs to strictly follow Onion Architecture principles and the JSON schema.\n\n"
             "VALIDATION CHECKLIST:\n"
             "✓ Use Cases have exactly ONE public method named 'execute'\n"
             "✓ Domain entities contain NO I/O operations (save, fetch, load, etc.)\n"
             "✓ Application layer depends ONLY on interfaces (I-prefixed)\n"
             "✓ Infrastructure classes implement their corresponding interfaces\n"
             "✓ Correct layer tags and naming conventions (PascalCase classes, snake_case methods)\n"
-            "✓ Layers must use: application/interface, application/use_case, infrastructure/model, infrastructure/repository, infrastructure/adapter, presentation/schema, presentation/dependency, presentation/router\n"
+            "✓ Every class must satisfy schema fields: dependencies, properties/attributes, methods, metadata. Fill missing metadata with structured details.\n"
             "✓ Repository naming: I<Entity>Repository → <Tech><Entity>Repository\n"
             "✓ Adapter naming: I<Capability>Adapter → <Tech><Capability>Adapter\n\n"
             "FIXES TO APPLY:\n"
-            "• Consolidate duplicate classes: merge attributes/methods from all instances of same class\n"
-            "• Ensure 'dependencies' lists interface names required by the class; add if missing\n"
+            "• Consolidate duplicate classes: merge attributes/methods from duplicates\n"
+            "• Ensure dependencies list all injected interfaces/adapters\n"
+            "• Populate properties or metadata.fields for domain entities and DTO schemas.\n"
+            "• metadata.contract for interfaces must document each method signature with inputs/outputs.\n"
             "• Remove cross-cutting concerns (auth, logging, HTTP handling)\n"
             "• Fix incorrect layer assignments\n"
-            "• PRESERVE all Use Cases - each feature needs its own Use Case\n"
-            "• Create unified domain model that supports all features\n"
-            "• Ensure Presentation Routers: endpoint methods accept repository providers as parameters and instantiate Use Case internally\n"
-            "• Dependency providers must expose get_*_repository methods ONLY (no get_*_use_case) and return interface types (e.g., get_product_repo(...) -> IProductRepository)\n"
-            "• Enforce Router method description template:\n"
-            "  [HTTP] <METHOD> <PATH>\n"
-            "  Response: <ResponseDTO> (status=<CODE>)\n"
-            "  Behavior: Instantiate <UseCaseClass>(deps...) and execute(request)\n"
-            "  Example: def create_order_endpoint(request: CreateOrderRequest, order_repo: IOrderRepository):\n"
-            "• ENHANCE Use Case descriptions with detailed execution logic (validation, domain calls, repository interactions, business rules, error handling)\n"
-            "  Example: 'Validates request.order_id exists, fetches order via repository.get_by_id(), checks order.status == \"pending\", calls order.confirm(), saves via repository.update(), returns ConfirmOrderResponse'\n\n"
+            "• PRESERVE all Use Cases\n"
+            "• Ensure Presentation Routers follow description template and metadata includes route + request/response DTOs.\n"
+            "• Dependency providers must expose get_*_repository methods returning interfaces; metadata.providers must list them.\n"
+            "• ENHANCE Use Case metadata.inputs/outputs/dependencies/steps; ensure methods describe orchestration.\n"
+            "• Infrastructure adapters/repositories must include metadata.endpoint/method/payload_schema or metadata.storage details (tech + model).\n\n"
             "DEPENDENCY RULE ENFORCEMENT:\n"
             "Presentation depends on Application; Application depends on Domain; Infrastructure implements Application interfaces.\n"
             "Inner layers NEVER depend on outer layers (inward dependency rule).\n\n"
-            "Return ONLY the corrected ClassDefinition list."
+            "Return ONLY the corrected ClassDefinition list matching the JSON schema."
         ),
     )
 
@@ -432,16 +364,15 @@ def verify_classes_agent(model_name: str = "openai:o4-mini"):
 # 3. Main pipeline function
 
 
-class ClassParser:
+class BEBEClassParser:
     """
-    ClassParser module: parse PRD to classes using Pydantic AI.
+    BEBEClassParser module: parse PRD to classes using Pydantic AI.
     """
 
     def __init__(self, model_name: str = "openai:o4-mini"):
         self.model_name = model_name
         self.prd_to_userflow = prd_to_userflow_agent(model_name)
-        self.userflow_to_dataflow = userflow_to_dataflow_agent(model_name)
-        self.dataflow_to_class = dataflow_to_class_agent(model_name)
+        self.userflow_to_class = userflow_to_class_agent(model_name)
         self.verify_classes = verify_classes_agent(model_name)
 
     async def process(self, prd_text: str) -> str:
@@ -468,29 +399,22 @@ class ClassParser:
             json.dump([uf.model_dump() for uf in user_flows], f)
         feature_classes = []
         for uf in user_flows:
-            logger.info(f"Converting userflow to dataflow for feature: {uf.feature}")
-            print(f"Converting userflow to dataflow for feature: {uf.feature}")
-            uf_info = f"Project Description: {project_description}\nUser Flow: {uf.model_dump()}"
-            data_flow: DataFlow = (
-                await self.userflow_to_dataflow.run(uf_info)
-            ).output.model_dump()
-            with open(
-                f"projects/warehouse/data_flows/{uf.feature}.json",
-                "w",
-                encoding="utf-8",
-            ) as f:
-                json.dump(data_flow, f)
-            logger.info(f"Converting dataflow to classes for feature: {uf.feature}")
-            print(f"Converting dataflow to classes for feature: {uf.feature}")
-            classes = (await self.dataflow_to_class.run(str(data_flow))).output
+            logger.info(f"Generating classes for feature: {uf.feature}")
+            print(f"Generating classes for feature: {uf.feature}")
+            userflow_payload = json.dumps(
+                {
+                    "project_description": project_description,
+                    "user_flow": uf.model_dump(),
+                },
+                ensure_ascii=False,
+            )
+            classes = (await self.userflow_to_class.run(userflow_payload)).output
             # convert classes to json
             classes = [class_item.model_dump() for class_item in classes]
-            logger.info(f"Generated classes for feature: {uf.feature}")
-            print(f"Generated classes for feature: {uf.feature}")
             feature_classes.append(
                 {
                     "feature": uf.feature,
-                    "data_flow": data_flow,
+                    "user_flow": uf.model_dump(),
                     "classes": classes,
                 }
             )
@@ -503,12 +427,119 @@ class ClassParser:
         verified_classes = (await self.verify_classes.run(str(feature_classes))).output
         # convert verified_classes to json
         verified_classes = [class_item.model_dump() for class_item in verified_classes]
+
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        schema_path = os.path.join(project_root, "be_schema.json")
+        try:
+            with open(schema_path, "r", encoding="utf-8") as schema_file:
+                schema = json.load(schema_file)
+        except OSError as exc:
+            logger.warning("Unable to load schema at %s: %s", schema_path, exc)
+            schema = None
+
+        if schema:
+            verified_classes = [self._apply_defaults(cls) for cls in verified_classes]
+
+        if schema:
+            for cls in verified_classes:
+                try:
+                    jsonschema.validate(instance=cls, schema=schema)
+                except jsonschema.ValidationError as exc:
+                    logger.warning(
+                        "Class validation failed for %s: %s",
+                        cls.get("name"),
+                        exc.message,
+                    )
         with open(
-            "projects/warehouse/verified_classes.json", "w", encoding="utf-8"
+            "projects/warehouse/be_objects.json",
+            "w",
+            encoding="utf-8",
         ) as f:
-            json.dump(verified_classes, f)
-        verified_classes = json.dumps(verified_classes)
-        return verified_classes
+            json.dump(verified_classes, f, ensure_ascii=False, indent=2)
+        return json.dumps(verified_classes, ensure_ascii=False)
+
+    @staticmethod
+    def _apply_defaults(cls: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure schema-required metadata/properties are present with sensible defaults."""
+
+        layer = cls.get("layer", "")
+
+        # Ensure properties exists as dict
+        if "properties" not in cls or cls["properties"] is None:
+            cls["properties"] = {}
+
+        # Ensure name exists
+        if not cls.get("name"):
+            cls["name"] = "UnnamedClass"
+
+        # Ensure type mirrors layer when missing
+        if not cls.get("type") and cls.get("layer"):
+            cls["type"] = cls["layer"]
+
+        # Normalize layer to top-level tag (domain|application|infrastructure|presentation)
+        layer_value = cls.get("layer") or ""
+        type_value = cls.get("type") or ""
+        if type_value and "/" in type_value:
+            base_layer = type_value.split("/", 1)[0]
+            cls["layer"] = base_layer
+        elif layer_value and "/" in layer_value:
+            cls["layer"] = layer_value.split("/", 1)[0]
+
+        # Ensure methods always a list
+        if cls.get("methods") is None:
+            cls["methods"] = []
+
+        # Domain entity & DTO schemas should have metadata.fields
+        metadata = cls.setdefault("metadata", {})
+
+        def _attributes_to_field_map(attributes: Optional[List[str]]) -> Dict[str, str]:
+            field_map: Dict[str, str] = {}
+            if not attributes:
+                return field_map
+            for attr in attributes:
+                if ":" in attr:
+                    name, type_hint = attr.split(":", 1)
+                    field_map[name.strip()] = type_hint.strip()
+            return field_map
+
+        if layer.startswith("domain/") and "fields" not in metadata:
+            metadata["fields"] = _attributes_to_field_map(cls.get("attributes"))
+
+        if layer.startswith("presentation/schema") and "fields" not in metadata:
+            metadata["fields"] = _attributes_to_field_map(cls.get("attributes"))
+
+        if layer == "application/interface" and "contract" not in metadata:
+            metadata["contract"] = [
+                {
+                    "method": f"{method.get('method_name')}({', '.join(method.get('parameters', []))}) -> {method.get('return_type', 'None')}"
+                }
+                for method in cls.get("methods", [])
+                if isinstance(method, dict)
+            ]
+
+        if layer == "application/use_case":
+            metadata.setdefault("inputs", "")
+            metadata.setdefault("outputs", "")
+            metadata.setdefault("dependencies", cls.get("dependencies", []))
+            if "steps" not in metadata:
+                metadata["steps"] = []
+
+        if layer.startswith("infrastructure/repository"):
+            metadata.setdefault("storage", {"uses": "SQLAlchemy", "model": ""})
+
+        if layer.startswith("presentation/dependency"):
+            metadata.setdefault(
+                "providers",
+                [
+                    method["method_name"]
+                    for method in cls.get("methods", [])
+                    if isinstance(method, dict)
+                ],
+            )
+
+        return cls
 
 
 # Example usage
@@ -523,14 +554,16 @@ async def main():
     with open(prd_path, "r", encoding="utf-8") as f:
         prd_text = f.read()
 
-    parser = ClassParser()
+    parser = BEBEClassParser()
     print("\n=== Full Pipeline Output ===")
-    await parser.process(prd_text)
-    # with open("projects/warehouse/classes.json", "w", encoding="utf-8") as f:
-    #     json.dump(output, f, ensure_ascii=False, indent=4)
-    print("Final output saved to projects/warehouse/classes.json")
+    verified_classes_json = await parser.process(prd_text)
+    verified_classes = json.loads(verified_classes_json)
+    with open("projects/warehouse/be_objects.json", "w", encoding="utf-8") as f:
+        json.dump(verified_classes, f, ensure_ascii=False, indent=2)
+    print("Final output saved to projects/warehouse/be_objects.json")
 
 
+# verify dựa trên dữ liệu trung gian đã có
 async def main_verify_classes():
     class_verifier = verify_classes_agent()
     print("\n=== Full Pipeline Output ===")
@@ -539,12 +572,13 @@ async def main_verify_classes():
     )
     verified_classes = (await class_verifier.run(str(feature_classes))).output
     verified_classes = [class_item.model_dump() for class_item in verified_classes]
-    with open("projects/warehouse/verified_classes.json", "w", encoding="utf-8") as f:
-        json.dump(verified_classes, f, ensure_ascii=False, indent=4)
-    print("Final output saved to projects/warehouse/verified_classes.json")
+    with open("projects/warehouse/be_objects.json", "w", encoding="utf-8") as f:
+        json.dump(verified_classes, f, ensure_ascii=False, indent=2)
+    print("Final output saved to projects/warehouse/be_objects.json")
 
 
 if __name__ == "__main__":
     import asyncio
 
-    asyncio.run(main_verify_classes())
+    asyncio.run(main())
+    # asyncio.run(main_verify_classes())

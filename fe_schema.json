@@ -1,0 +1,100 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Clean Architecture Class Schema (Minimal)",
+    "type": "object",
+    "required": [
+        "layer",
+        "type",
+        "name"
+    ],
+    "properties": {
+        "layer": {
+            "type": "string",
+            "enum": [
+                "domain",
+                "application",
+                "infrastructure",
+                "presentation"
+            ]
+        },
+        "type": {
+            "type": "string",
+            "enum": [
+                "entity",
+                "service",
+                "interface",
+                "use_case",
+                "repository",
+                "store",
+                "hook",
+                "component"
+            ]
+        },
+        "name": {
+            "type": "string"
+        },
+        "properties": {
+            "type": "object",
+            "description": "Tập thuộc tính dạng key:value (field:type)",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "attributes": {
+            "type": "array",
+            "description": "Danh sách mô tả thuộc tính dạng 'name: type'",
+            "items": {
+                "type": "string"
+            }
+        },
+        "methods": {
+            "type": "array",
+            "description": "Có thể là signature dạng chuỗi hoặc object chi tiết",
+            "items": {
+                "oneOf": [
+                    {
+                        "type": "string"
+                    },
+                    {
+                        "type": "object",
+                        "required": [
+                            "method_name",
+                            "description"
+                        ],
+                        "properties": {
+                            "method_name": {
+                                "type": "string"
+                            },
+                            "description": {
+                                "type": "string"
+                            },
+                            "parameters": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                }
+                            },
+                            "return_type": {
+                                "type": "string"
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                ]
+            }
+        },
+        "dependencies": {
+            "type": "array",
+            "description": "Tên các interface/store/use_case mà đối tượng phụ thuộc",
+            "items": {
+                "type": "string"
+            }
+        },
+        "metadata": {
+            "type": "object",
+            "description": "Thông tin bổ sung (inputs, outputs, stores_used, hooks_used, endpoint, v.v.)",
+            "additionalProperties": true
+        }
+    },
+    "additionalProperties": false
+}

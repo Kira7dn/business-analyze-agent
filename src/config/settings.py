@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     firecrawl_api_key: str = ""
     supabase_url: str = ""
     supabase_key: str = ""
+    model_choice: str = "gpt-4"
     server_name: str = "business-analyze-agent"
 
 
