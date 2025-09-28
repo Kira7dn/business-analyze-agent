@@ -10,7 +10,8 @@ from .chunk_embed_store import ChunkEmbedStore
 
 from .requirement_evaluator import RequirementEvaluator
 from .feature_suggestion import FeatureSuggestionAgent
-from .class_parser import ClassParser
+from .be_object_parser import BEClassParser
+from .fe_object_parser import FEObjectParser
 
 __all__ = [
     "RequirementAnalyzer",
@@ -19,5 +20,6 @@ __all__ = [
     "ChunkEmbedStore",
     "RequirementEvaluator",
     "FeatureSuggestionAgent",
-    "ClassParser",
+    "BEClassParser",
+    "FEObjectParser",
 ]

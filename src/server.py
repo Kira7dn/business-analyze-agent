@@ -17,7 +17,7 @@ from .tools.analyzer import RequirementAnalyzer
 from .tools.question_generator import QuestionGenerator
 from .tools.requirement_evaluator import RequirementEvaluator
 from .tools.feature_suggestion import FeatureSuggestionAgent
-from .tools.class_parser import ClassParser
+from .tools.be_object_parser import BEClassParser
 from .utils.logger import setup_logger
 from .config.settings import settings
 
@@ -36,7 +36,7 @@ try:
     stack_search = StackSearch()
     stack_store = ChunkEmbedStore(table_name="tech_stacks")
     structure_store = ChunkEmbedStore(table_name="tech_structures")
-    class_parser = ClassParser()
+    be_class_parser = BEClassParser()
     logger.info("All tools initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize tools: {str(e)}")
@@ -134,7 +134,7 @@ async def list_tools() -> List[Tool]:
             },
         ),
         Tool(
-            name="class_parser",
+            name="be_class_parser",
             description="Parse PRD text to backend classes using Pydantic AI.",
             inputSchema={
                 "type": "object",
@@ -288,11 +288,11 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             )
             result = await structure_store.process(file_path)
             return [TextContent(type="text", text=result)]
-        elif name == "class_parser":
+        elif name == "be_class_parser":
             prd_text = arguments.get("prd_text", "")
             logger.info("Parsing PRD to backend classes")
-            class_parser = ClassParser()
-            result = await class_parser.process(prd_text)
+            # be_class_parser = BEClassParser()
+            result = await be_class_parser.process(prd_text)
             return [TextContent(type="text", text=result)]
         else:
             return [

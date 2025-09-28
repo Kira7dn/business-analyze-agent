@@ -7,27 +7,282 @@ through multiple transformation stages to generate backend class definitions.
 The pipeline follows these steps:
 1. Convert PRD text to UserFlow objects
 2. Convert each UserFlow directly into Clean Architecture class definitions
-3. Verify and normalize the resulting classes against `be_schema.json`
+3. Chuẩn hoá và xác thực kết quả bằng các `BaseModel` của Pydantic
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 import json
 import logging
 import sys
 import os
 
-import jsonschema
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIResponsesModelSettings
 
-# from src.utils.logger import setup_logger
 
 logger = logging.getLogger(__name__)
 
 
-# 1. Define schema for each step
+# ---------------------------------------------------------------------------
+# Domain class schema
+# ---------------------------------------------------------------------------
+
+LayerName = Literal["domain", "application", "infrastructure", "presentation"]
+
+ComponentType = Literal[
+    "domain/entity",
+    "domain/service",
+    "application/interface",
+    "application/use_case",
+    "infrastructure/model",
+    "infrastructure/repository",
+    "infrastructure/adapter",
+    "presentation/schema",
+    "presentation/dependency",
+    "presentation/router",
+]
+
+LAYER_ALLOWED_TYPES: Dict[LayerName, List[ComponentType]] = {
+    "domain": ["domain/entity", "domain/service"],
+    "application": ["application/interface", "application/use_case"],
+    "infrastructure": [
+        "infrastructure/model",
+        "infrastructure/repository",
+        "infrastructure/adapter",
+    ],
+    "presentation": [
+        "presentation/schema",
+        "presentation/dependency",
+        "presentation/router",
+    ],
+}
+
+
+class MethodDefinition(BaseModel):
+    """Function/backend interface specification for a data flow."""
+
+    method_name: str = Field(description="Name of the function in snake_case format.")
+    description: str = Field(
+        description="Concise description of the function's purpose."
+    )
+    parameters: List[str] = Field(
+        description="List of parameters in format 'name: type' (e.g., 'user_id: int')."
+    )
+    return_type: str = Field(
+        description="Return type of the function (e.g., 'dict', 'User', 'bool')."
+    )
+
+
+class ArchitectureComponent(BaseModel):
+    """Class definition for a feature."""
+
+    name: str = Field(description="Name of the class in PascalCase format.")
+    type: Optional[ComponentType] = Field(
+        default=None,
+        description=(
+            "Architectural classification tag mirroring layer (e.g., 'domain/entity', 'application/use_case')."
+        ),
+    )
+    layer: LayerName = Field(
+        description=(
+            "Top-level Clean Architecture layer tag. One of: "
+            "'domain', 'application', 'infrastructure', 'presentation'."
+        )
+    )
+    dependencies: List[str] = Field(
+        default_factory=list,
+        description=(
+            "List of interface names this class depends on (e.g., "
+            "['IOrderRepository', 'IPaymentAdapter'])."
+        ),
+    )
+    properties: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional key:value map of property name to type.",
+    )
+    description: str = Field(
+        description=(
+            "Description of the class's purpose and role within the " "architecture."
+        )
+    )
+    attributes: List[str] = Field(
+        default_factory=list,
+        description="List of attributes in format 'name: type'.",
+    )
+    methods: List[MethodDefinition] = Field(
+        default_factory=list,
+        description=("List of method definitions (name, parameters, description)."),
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional structured information (contracts, DTOs, endpoint details, etc.).",
+    )
+
+    @model_validator(mode="after")
+    def _enforce_layer_and_cleanup(self) -> "ArchitectureComponent":
+        allowed_types = LAYER_ALLOWED_TYPES.get(self.layer, [])
+        if self.type is None and allowed_types:
+            self.type = allowed_types[0]
+        elif self.type is not None and self.type not in allowed_types:
+            raise ValueError(
+                f"type '{self.type}' is not valid for layer '{self.layer}'. Allowed: {allowed_types}"
+            )
+
+        self.dependencies = [
+            dep.strip()
+            for dep in self.dependencies
+            if isinstance(dep, str) and dep.strip()
+        ]
+
+        self.attributes = [
+            attr.strip()
+            for attr in self.attributes
+            if isinstance(attr, str) and attr.strip()
+        ]
+
+        cleaned_methods: List[MethodDefinition] = []
+        for method in self.methods:
+            if isinstance(method, MethodDefinition):
+                cleaned_methods.append(method)
+            elif isinstance(method, dict):
+                cleaned_methods.append(MethodDefinition(**method))
+
+        if not isinstance(self.metadata, dict):
+            self.metadata = {}
+
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
+
+
+def _apply_component_defaults(cls: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize backend class dictionaries before validation."""
+
+    obj: Dict[str, Any] = dict(cls)
+
+    name_value = obj.get("name")
+    if not isinstance(name_value, str) or not name_value.strip():
+        obj["name"] = "UnnamedClass"
+
+    properties_value = obj.get("properties")
+    obj["properties"] = properties_value if isinstance(properties_value, dict) else {}
+
+    dependencies_value = obj.get("dependencies")
+    if isinstance(dependencies_value, list):
+        obj["dependencies"] = [
+            dep.strip()
+            for dep in dependencies_value
+            if isinstance(dep, str) and dep.strip()
+        ]
+    else:
+        obj["dependencies"] = []
+
+    attributes_value = obj.get("attributes")
+    if isinstance(attributes_value, list):
+        obj["attributes"] = [
+            attr.strip()
+            for attr in attributes_value
+            if isinstance(attr, str) and attr.strip()
+        ]
+    else:
+        obj["attributes"] = []
+
+    methods_value = obj.get("methods")
+    normalized_methods: List[Dict[str, Any]] = []
+    if isinstance(methods_value, list):
+        for method in methods_value:
+            if isinstance(method, MethodDefinition):
+                normalized_methods.append(method.model_dump())
+            elif isinstance(method, dict):
+                normalized_methods.append(method)
+    obj["methods"] = normalized_methods
+
+    layer_value = obj.get("layer")
+    layer_str = layer_value.strip() if isinstance(layer_value, str) else ""
+    type_value = obj.get("type")
+    type_str = type_value.strip() if isinstance(type_value, str) else ""
+
+    inferred_layer = ""
+    if type_str and "/" in type_str:
+        inferred_layer = type_str.split("/", 1)[0]
+    elif layer_str:
+        inferred_layer = layer_str.split("/", 1)[0] if "/" in layer_str else layer_str
+
+    if inferred_layer not in LAYER_ALLOWED_TYPES:
+        inferred_layer = "application"
+
+    allowed_types = LAYER_ALLOWED_TYPES[inferred_layer]
+    if not type_str or type_str not in allowed_types:
+        type_str = allowed_types[0]
+
+    obj["layer"] = inferred_layer
+    obj["type"] = type_str
+
+    metadata_value = obj.get("metadata")
+    metadata = metadata_value if isinstance(metadata_value, dict) else {}
+    metadata.setdefault("top_layer", inferred_layer)
+
+    def _attributes_to_field_map(attributes: List[str]) -> Dict[str, str]:
+        field_map: Dict[str, str] = {}
+        for attr in attributes:
+            if isinstance(attr, str) and ":" in attr:
+                name, type_hint = attr.split(":", 1)
+                field_map[name.strip()] = type_hint.strip()
+        return field_map
+
+    if type_str.startswith("domain/"):
+        metadata.setdefault("fields", _attributes_to_field_map(obj["attributes"]))
+
+    if type_str.startswith("presentation/schema"):
+        metadata.setdefault("fields", _attributes_to_field_map(obj["attributes"]))
+
+    if type_str == "application/interface":
+        metadata.setdefault(
+            "contract",
+            [
+                {
+                    "method": (
+                        f"{method.get('method_name')}"
+                        f"({', '.join(method.get('parameters', []))})"
+                        f" -> {method.get('return_type', 'None')}"
+                    )
+                }
+                for method in obj["methods"]
+                if isinstance(method, dict)
+            ],
+        )
+
+    if type_str == "application/use_case":
+        metadata.setdefault("inputs", "")
+        metadata.setdefault("outputs", "")
+        metadata.setdefault("dependencies", obj["dependencies"])
+        metadata.setdefault("steps", [])
+
+    if type_str.startswith("infrastructure/repository"):
+        metadata.setdefault("storage", {"uses": "SQLAlchemy", "model": ""})
+
+    if type_str.startswith("presentation/dependency"):
+        metadata.setdefault(
+            "providers",
+            [
+                method.get("method_name")
+                for method in obj["methods"]
+                if isinstance(method, dict) and method.get("method_name")
+            ],
+        )
+
+    obj["metadata"] = metadata
+
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# PydanticAI pipeline cho BE objects
+# ---------------------------------------------------------------------------
 
 
 class UserFlow(BaseModel):
@@ -43,23 +298,6 @@ class UserFlow(BaseModel):
         description="Ordered list of steps the actor takes to complete this flow."
     )
 
-    class Config:
-        """Configuration for the UserFlow model."""
-
-        json_schema_extra = {
-            "example": {
-                "feature": "User Registration",
-                "actor": "New Customer",
-                "steps": [
-                    "User navigates to registration page",
-                    "User fills out registration form",
-                    "User submits the form",
-                    "System validates input",
-                    "System creates user account",
-                ],
-            }
-        }
-
 
 class UserFlowOutput(BaseModel):
     """Collection of user flows extracted from PRD."""
@@ -68,132 +306,13 @@ class UserFlowOutput(BaseModel):
         description="List of all user flows extracted from the PRD."
     )
     project_description: str = Field(description="Project description.")
-
-    class Config:
-        """Configuration for the UserFlowList model."""
-
-        json_schema_extra = {
-            "example": {
-                "userflows": [
-                    {
-                        "feature": "Dashboard summary",
-                        "actor": "Warehouse staff",
-                        "steps": ["Access dashboard", "Filter orders", "View results"],
-                    },
-                    {
-                        "feature": "Confirm order",
-                        "actor": "Warehouse staff",
-                        "steps": [
-                            "Select order",
-                            "Confirm order",
-                            "Update status",
-                        ],
-                    },
-                ],
-                "project_description": "Build a web application for order management that helps warehouse staff process at least 1,000 orders per day with an average response time of ≤ 150ms.",
-            }
-        }
-
-
-class MethodSpec(BaseModel):
-    """Function/backend interface specification for a data flow."""
-
-    method_name: str = Field(description="Name of the function in snake_case format.")
-
-    description: str = Field(
-        description="Concise description of the function's purpose."
-    )
-    parameters: List[str] = Field(
-        description="List of parameters in format 'name: type' (e.g., 'user_id: int')."
-    )
-    return_type: str = Field(
-        description="Return type of the function (e.g., 'dict', 'User', 'bool')."
-    )
-
-    class Config:
-        """Configuration for the FunctionSpec model."""
-
-        json_schema_extra = {
-            "example": {
-                "method_name": "search_products",
-                "description": "Searches for products based on keywords and filters",
-                "parameters": ["keyword: str", "page: int = 1"],
-                "return_type": "dict",
-            }
-        }
-
-
-class ClassDefinition(BaseModel):
-    """Class definition for a feature."""
-
-    name: str = Field(description="Name of the class in PascalCase format.")
-    type: Optional[str] = Field(
-        default=None,
-        description=(
-            "Architectural classification tag mirroring layer (e.g., 'domain/entity', 'application/use_case')."
-        ),
-    )
-    layer: str = Field(
-        description=(
-            "Deterministic architectural layer tag of the class. One of: "
-            "'domain/entity', 'domain/service', "
-            "'application/interface', 'application/use_case', "
-            "'infrastructure/model', 'infrastructure/repository', 'infrastructure/adapter', "
-            "'presentation/schema', 'presentation/dependency', 'presentation/router'."
-        )
-    )
-    dependencies: Optional[List[str]] = Field(
-        default_factory=list,
-        description=(
-            "List of interface names this class depends on (e.g., ['IOrderRepository', 'IPaymentAdapter'])."
-        ),
-    )
-    properties: Optional[Dict[str, str]] = Field(
-        default_factory=dict,
-        description="Optional key:value map of property name to type.",
-    )
-    description: str = Field(
-        description="Description of the class's purpose and role within the architecture."
-    )
-    attributes: Optional[List[str]] = Field(
-        default_factory=list,
-        description="List of attributes in format 'name: type'.",
-    )
-    methods: Optional[List[MethodSpec]] = Field(
-        default_factory=list,
-        description="List of methods in MethodSpec format.",
-    )
     metadata: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
         description="Additional structured information (contracts, DTOs, endpoint details, etc.).",
     )
 
-    class Config:
-        """Configuration for the ClassDefinition model."""
 
-        json_schema_extra = {
-            "example": {
-                "name": "SQLOrderRepository",
-                "layer": "infrastructure/repository",
-                "description": "Implements IOrderRepository using SQLAlchemy with PostgreSQL.",
-                "attributes": ["db: Session"],
-                "dependencies": ["IOrderRepository"],
-                "methods": [
-                    {
-                        "method_name": "save",
-                        "description": "Persist an order and return the stored entity with assigned id.",
-                        "parameters": ["order: Order"],
-                        "return_type": "Order",
-                    }
-                ],
-            }
-        }
-
-
-# 2. Define agent factories for each step
-
-
-def prd_to_userflow_agent(model_name: str = "openai:o4-mini"):
+def prd_to_flow_agent(model_name: str = "openai:o4-mini"):
     """
     Create an agent to convert PRD to a UserFlowList.
 
@@ -241,7 +360,7 @@ def prd_to_userflow_agent(model_name: str = "openai:o4-mini"):
     )
 
 
-def userflow_to_class_agent(model_name: str = "openai:o4-mini"):
+def flow_to_component_agent(model_name: str = "openai:o4-mini"):
     """
     Create an agent to convert UserFlow context directly into Clean Architecture classes.
 
@@ -258,7 +377,7 @@ def userflow_to_class_agent(model_name: str = "openai:o4-mini"):
     )
     return Agent(
         model_name,
-        output_type=List[ClassDefinition],
+        output_type=List[ArchitectureComponent],
         retries=3,
         model_settings=settings,
         system_prompt=(
@@ -310,7 +429,7 @@ def userflow_to_class_agent(model_name: str = "openai:o4-mini"):
     )
 
 
-def verify_classes_agent(model_name: str = "openai:o4-mini"):
+def verify_components_agent(model_name: str = "openai:o4-mini"):
     """
     Create an agent to verify classes.
 
@@ -327,7 +446,7 @@ def verify_classes_agent(model_name: str = "openai:o4-mini"):
     )
     return Agent(
         model_name,
-        output_type=List[ClassDefinition],
+        output_type=List[ArchitectureComponent],
         retries=3,
         model_settings=settings,
         system_prompt=(
@@ -356,24 +475,26 @@ def verify_classes_agent(model_name: str = "openai:o4-mini"):
             "DEPENDENCY RULE ENFORCEMENT:\n"
             "Presentation depends on Application; Application depends on Domain; Infrastructure implements Application interfaces.\n"
             "Inner layers NEVER depend on outer layers (inward dependency rule).\n\n"
-            "Return ONLY the corrected ClassDefinition list matching the JSON schema."
+            "Return ONLY the corrected BEObject list matching the JSON schema."
         ),
     )
 
 
-# 3. Main pipeline function
+# ---------------------------------------------------------------------------
+# Parser pipeline
+# ---------------------------------------------------------------------------
 
 
-class BEBEClassParser:
+class BEClassParser:
     """
-    BEBEClassParser module: parse PRD to classes using Pydantic AI.
+    BEClassParser module: parse PRD to classes using Pydantic AI.
     """
 
     def __init__(self, model_name: str = "openai:o4-mini"):
         self.model_name = model_name
-        self.prd_to_userflow = prd_to_userflow_agent(model_name)
-        self.userflow_to_class = userflow_to_class_agent(model_name)
-        self.verify_classes = verify_classes_agent(model_name)
+        self.prd_to_userflow = prd_to_flow_agent(model_name)
+        self.userflow_to_class = flow_to_component_agent(model_name)
+        self.verify_classes = verify_components_agent(model_name)
 
     async def process(self, prd_text: str) -> str:
         """
@@ -393,14 +514,11 @@ class BEBEClassParser:
         ).output
         user_flows = user_flows_output.userflows
         project_description = user_flows_output.project_description
-        logger.info(f"Generated {len(user_flows)} user flows")
-        print(f"Generated {len(user_flows)} user flows")
-        with open("projects/warehouse/user_flows.json", "w", encoding="utf-8") as f:
-            json.dump([uf.model_dump() for uf in user_flows], f)
-        feature_classes = []
+        logger.info("Generated %s user flows", len(user_flows))
+
+        feature_components: List[Dict[str, Any]] = []
         for uf in user_flows:
-            logger.info(f"Generating classes for feature: {uf.feature}")
-            print(f"Generating classes for feature: {uf.feature}")
+            logger.info("Generating classes for feature: %s", uf.feature)
             userflow_payload = json.dumps(
                 {
                     "project_description": project_description,
@@ -408,153 +526,61 @@ class BEBEClassParser:
                 },
                 ensure_ascii=False,
             )
-            classes = (await self.userflow_to_class.run(userflow_payload)).output
-            # convert classes to json
-            classes = [class_item.model_dump() for class_item in classes]
-            feature_classes.append(
+            components = (await self.userflow_to_class.run(userflow_payload)).output
+            components = [component.model_dump() for component in components]
+            feature_components.append(
                 {
                     "feature": uf.feature,
                     "user_flow": uf.model_dump(),
-                    "classes": classes,
+                    "classes": components,
                 }
             )
-        with open(
-            "projects/warehouse/feature_classes.json", "w", encoding="utf-8"
-        ) as f:
-            json.dump(feature_classes, f)
         logger.info("Verifying classes")
-        print("Verifying classes")
-        verified_classes = (await self.verify_classes.run(str(feature_classes))).output
-        # convert verified_classes to json
-        verified_classes = [class_item.model_dump() for class_item in verified_classes]
-
-        project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
-        schema_path = os.path.join(project_root, "be_schema.json")
-        try:
-            with open(schema_path, "r", encoding="utf-8") as schema_file:
-                schema = json.load(schema_file)
-        except OSError as exc:
-            logger.warning("Unable to load schema at %s: %s", schema_path, exc)
-            schema = None
-
-        if schema:
-            verified_classes = [self._apply_defaults(cls) for cls in verified_classes]
-
-        if schema:
-            for cls in verified_classes:
-                try:
-                    jsonschema.validate(instance=cls, schema=schema)
-                except jsonschema.ValidationError as exc:
-                    logger.warning(
-                        "Class validation failed for %s: %s",
-                        cls.get("name"),
-                        exc.message,
-                    )
-        with open(
-            "projects/warehouse/be_objects.json",
-            "w",
-            encoding="utf-8",
-        ) as f:
-            json.dump(verified_classes, f, ensure_ascii=False, indent=2)
-        return json.dumps(verified_classes, ensure_ascii=False)
-
-    @staticmethod
-    def _apply_defaults(cls: Dict[str, Any]) -> Dict[str, Any]:
-        """Ensure schema-required metadata/properties are present with sensible defaults."""
-
-        layer = cls.get("layer", "")
-
-        # Ensure properties exists as dict
-        if "properties" not in cls or cls["properties"] is None:
-            cls["properties"] = {}
-
-        # Ensure name exists
-        if not cls.get("name"):
-            cls["name"] = "UnnamedClass"
-
-        # Ensure type mirrors layer when missing
-        if not cls.get("type") and cls.get("layer"):
-            cls["type"] = cls["layer"]
-
-        # Normalize layer to top-level tag (domain|application|infrastructure|presentation)
-        layer_value = cls.get("layer") or ""
-        type_value = cls.get("type") or ""
-        if type_value and "/" in type_value:
-            base_layer = type_value.split("/", 1)[0]
-            cls["layer"] = base_layer
-        elif layer_value and "/" in layer_value:
-            cls["layer"] = layer_value.split("/", 1)[0]
-
-        # Ensure methods always a list
-        if cls.get("methods") is None:
-            cls["methods"] = []
-
-        # Domain entity & DTO schemas should have metadata.fields
-        metadata = cls.setdefault("metadata", {})
-
-        def _attributes_to_field_map(attributes: Optional[List[str]]) -> Dict[str, str]:
-            field_map: Dict[str, str] = {}
-            if not attributes:
-                return field_map
-            for attr in attributes:
-                if ":" in attr:
-                    name, type_hint = attr.split(":", 1)
-                    field_map[name.strip()] = type_hint.strip()
-            return field_map
-
-        if layer.startswith("domain/") and "fields" not in metadata:
-            metadata["fields"] = _attributes_to_field_map(cls.get("attributes"))
-
-        if layer.startswith("presentation/schema") and "fields" not in metadata:
-            metadata["fields"] = _attributes_to_field_map(cls.get("attributes"))
-
-        if layer == "application/interface" and "contract" not in metadata:
-            metadata["contract"] = [
-                {
-                    "method": f"{method.get('method_name')}({', '.join(method.get('parameters', []))}) -> {method.get('return_type', 'None')}"
-                }
-                for method in cls.get("methods", [])
-                if isinstance(method, dict)
-            ]
-
-        if layer == "application/use_case":
-            metadata.setdefault("inputs", "")
-            metadata.setdefault("outputs", "")
-            metadata.setdefault("dependencies", cls.get("dependencies", []))
-            if "steps" not in metadata:
-                metadata["steps"] = []
-
-        if layer.startswith("infrastructure/repository"):
-            metadata.setdefault("storage", {"uses": "SQLAlchemy", "model": ""})
-
-        if layer.startswith("presentation/dependency"):
-            metadata.setdefault(
-                "providers",
-                [
-                    method["method_name"]
-                    for method in cls.get("methods", [])
-                    if isinstance(method, dict)
-                ],
+        verified_components = (
+            await self.verify_classes.run(
+                json.dumps(feature_components, ensure_ascii=False)
             )
+        ).output
+        verified_components = [
+            component.model_dump() for component in verified_components
+        ]
 
-        return cls
+        validated_components: List[Dict[str, Any]] = []
+        for component in verified_components:
+            component_with_defaults = _apply_component_defaults(component)
+            try:
+                component_model = ArchitectureComponent.model_validate(
+                    component_with_defaults
+                )
+                validated_components.append(component_model.model_dump())
+            except ValidationError as exc:
+                logger.warning(
+                    "Class validation failed for %s: %s",
+                    component_with_defaults.get("name"),
+                    exc,
+                )
+                validated_components.append(component_with_defaults)
+
+        return json.dumps(validated_components, ensure_ascii=False)
 
 
-# Example usage
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
 async def main():
     """Main function to run the class parser pipeline."""
     prd_path = "projects/warehouse/PRD.md"
 
     if not os.path.exists(prd_path):
-        logger.error(f"PRD file not found: {prd_path}")
+        logger.error("PRD file not found: %s", prd_path)
         sys.exit(1)
 
     with open(prd_path, "r", encoding="utf-8") as f:
         prd_text = f.read()
 
-    parser = BEBEClassParser()
+    parser = BEClassParser()
     print("\n=== Full Pipeline Output ===")
     verified_classes_json = await parser.process(prd_text)
     verified_classes = json.loads(verified_classes_json)
@@ -564,17 +590,17 @@ async def main():
 
 
 # verify dựa trên dữ liệu trung gian đã có
-async def main_verify_classes():
-    class_verifier = verify_classes_agent()
-    print("\n=== Full Pipeline Output ===")
-    feature_classes = json.load(
-        open("projects/warehouse/feature_classes.json", "r", encoding="utf-8")
-    )
-    verified_classes = (await class_verifier.run(str(feature_classes))).output
-    verified_classes = [class_item.model_dump() for class_item in verified_classes]
-    with open("projects/warehouse/be_objects.json", "w", encoding="utf-8") as f:
-        json.dump(verified_classes, f, ensure_ascii=False, indent=2)
-    print("Final output saved to projects/warehouse/be_objects.json")
+# async def main_verify_classes():
+#     class_verifier = verify_classes_agent()
+#     print("\n=== Full Pipeline Output ===")
+#     feature_classes = json.load(
+#         open("projects/warehouse/feature_classes.json", "r", encoding="utf-8")
+#     )
+#     verified_classes = (await class_verifier.run(str(feature_classes))).output
+#     verified_classes = [class_item.model_dump() for class_item in verified_classes]
+#     with open("projects/warehouse/be_objects.json", "w", encoding="utf-8") as f:
+#         json.dump(verified_classes, f, ensure_ascii=False, indent=2)
+#     print("Final output saved to projects/warehouse/be_objects.json")
 
 
 if __name__ == "__main__":

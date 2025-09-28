@@ -9,17 +9,8 @@ ignore-patterns=^test_.*\.py$
 [DESIGN]
 # Disable protected-access warning for test files and redefined-outer-name
 disable =   protected-access,
-            redefined-outer-name,
-            broad-exception-raised,
-            broad-exception-caught,
-            line-too-long,
-            logging-fstring-interpolation,
-            import-outside-toplevel,
-            missing-module-docstring,
-            missing-class-docstring,
-            missing-function-docstring,
-            wrong-import-order,
-            wrong-import-position
+            line-too-long
+
 
 [MESSAGES CONTROL]
 # Disable specific checks for test files
