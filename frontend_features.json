@@ -1,0 +1,108 @@
+[
+  {
+    "name": "UserAuthentication",
+    "actor": "Staff and Manager",
+    "project_goal": "Secure access with OAuth2 compliance and role-based permissions",
+    "ui_flow": [
+      "Open login page",
+      "Redirect to OAuth2 provider",
+      "Enter credentials",
+      "Receive token and redirect to dashboard"
+    ],
+    "application_touchpoints": [
+      "AuthUseCase",
+      "SessionStore",
+      "UserRepository"
+    ],
+    "noteworthy_constraints": [
+      "OAuth2 compliance",
+      "Least-privilege access",
+      "Session timeout after 15 minutes"
+    ]
+  },
+  {
+    "name": "OrderLifecycleManagement",
+    "actor": "Staff",
+    "project_goal": "Allow staff to create and transition orders from new to confirmed to packaged",
+    "ui_flow": [
+      "Navigate to Orders list",
+      "Click 'New Order' to create",
+      "Select an order",
+      "Click 'Confirm' or 'Package' button",
+      "View updated order status"
+    ],
+    "application_touchpoints": [
+      "OrderUseCase",
+      "OrderRepository",
+      "AuditLogUseCase",
+      "AuditLogRepository"
+    ],
+    "noteworthy_constraints": [
+      "API latency ≤150ms",
+      "Audit trail for each state change",
+      "Role-based control: staff only"
+    ]
+  },
+  {
+    "name": "OrderDashboardWithFilters",
+    "actor": "Staff and Manager",
+    "project_goal": "Provide real-time order listing with filtering by status and date",
+    "ui_flow": [
+      "Open dashboard view",
+      "Apply status and date filters",
+      "View filtered list of orders",
+      "Select an order to view details"
+    ],
+    "application_touchpoints": [
+      "OrderUseCase",
+      "OrderRepository",
+      "Store"
+    ],
+    "noteworthy_constraints": [
+      "Sustain 500 RPS with ≤150ms API calls",
+      "Date format mm/dd/yyyy (GMT+7)",
+      "Responsive for low-memory environment"
+    ]
+  },
+  {
+    "name": "KPIReporting",
+    "actor": "Manager",
+    "project_goal": "Display key metrics like orders per staff and average processing time",
+    "ui_flow": [
+      "Navigate to KPI Reports",
+      "Select reporting period",
+      "View graphical metrics",
+      "Export or refresh data"
+    ],
+    "application_touchpoints": [
+      "KpiUseCase",
+      "KpiRepository",
+      "Store"
+    ],
+    "noteworthy_constraints": [
+      "API latency ≤150ms",
+      "Charts must load within 200ms",
+      "Filter by date range"
+    ]
+  },
+  {
+    "name": "AuditLogViewer",
+    "actor": "Manager",
+    "project_goal": "Enable audit trail inspection of order status transitions",
+    "ui_flow": [
+      "Go to Audit Logs",
+      "Filter logs by order or date",
+      "View detailed log entries"
+    ],
+    "application_touchpoints": [
+      "AuditLogUseCase",
+      "AuditLogRepository",
+      "Store"
+    ],
+    "noteworthy_constraints": [
+      "Secure display of audit data",
+      "Pagination for performance",
+      "Read-only access for managers"
+    ]
+  }
+]
