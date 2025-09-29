@@ -12,6 +12,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+from dotenv import load_dotenv
+
 from .tools.chunk_embed_store import ChunkEmbedStore
 from .tools.stack_search import StackSearch
 from .tools.analyzer import RequirementAnalyzer
@@ -19,13 +21,12 @@ from .tools.question_generator import QuestionGenerator
 from .tools.requirement_evaluator import RequirementEvaluator
 from .tools.feature_suggestion import FeatureSuggestionAgent
 from .tools.be_object_parser import BEClassParser
-from .tools.component_parser import ComponentParser
+from .tools.component_designer import ComponentDesigner
 from .utils.logger import setup_logger
-from dotenv import load_dotenv
 
 # Setup logging
-logger = setup_logger(__name__)
 load_dotenv()
+logger = setup_logger(__name__)
 # Initialize MCP server
 server = Server("business-analyze-agent")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -41,7 +42,7 @@ try:
     stack_store = ChunkEmbedStore(table_name="tech_stacks")
     structure_store = ChunkEmbedStore(table_name="tech_structures")
     be_class_parser = BEClassParser()
-    component_parser = ComponentParser()
+    component_designer = ComponentDesigner()
     logger.info("All tools initialized successfully")
 
 except Exception as exc:  # noqa: BLE001
@@ -145,7 +146,7 @@ async def list_tools() -> List[Tool]:
             },
         ),
         Tool(
-            name="component_parser",
+            name="component_designer",
             description="Generate Clean Architecture components from PRD text.",
             inputSchema={
                 "type": "object",
@@ -305,19 +306,19 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             # be_class_parser = BEClassParser()
             result = await be_class_parser.process(prd_text)
             return [TextContent(type="text", text=result)]
-        elif name == "component_parser":
+        elif name == "component_designer":
             prd_text = arguments.get("prd_text", "")
             if not prd_text:
-                logger.warning("component_parser called without prd_text")
+                logger.warning("component_designer called without prd_text")
                 return [
                     TextContent(
                         type="text",
-                        text="❌ Missing 'prd_text' argument for component_parser tool.",
+                        text="❌ Missing 'prd_text' argument for component_designer tool.",
                     )
                 ]
 
             logger.info("Generating components from PRD text")
-            result = await component_parser.process(prd_text)
+            result = await component_designer.process(prd_text)
             return [TextContent(type="text", text=result)]
         else:
             return [

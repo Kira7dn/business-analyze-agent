@@ -241,7 +241,7 @@ def verify_components_agent(
 # ---------------------------------------------------------------------------
 
 
-class ComponentParser:
+class ComponentDesigner:
     """Component Parser orchestrating PRD → features → components → verified set."""
 
     def __init__(self, model_name: str = "openai:gpt-5-mini") -> None:

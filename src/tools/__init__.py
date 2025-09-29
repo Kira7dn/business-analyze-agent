@@ -12,6 +12,7 @@ from .requirement_evaluator import RequirementEvaluator
 from .feature_suggestion import FeatureSuggestionAgent
 from .be_object_parser import BEClassParser
 from .fe_object_parser import FEObjectParser
+from .component_designer import ComponentDesigner
 
 __all__ = [
     "RequirementAnalyzer",
@@ -22,4 +23,5 @@ __all__ = [
     "FeatureSuggestionAgent",
     "BEClassParser",
     "FEObjectParser",
+    "ComponentDesigner",
 ]
