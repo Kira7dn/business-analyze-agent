@@ -163,11 +163,11 @@ def feature_to_component_agent(
         "• application: application/use_case, application/interface, application/store\n"
         "• infrastructure: infrastructure/adapter, infrastructure/repository\n"
         "• presentation: presentation/component, presentation/hook\n\n"
-        "FIELD RULES (keep minimal, framework-agnostic):\n"
+        "FIELD RULES (framework-agnostic, minimal):\n"
         "• All objects MUST have `metadata.intent`.\n"
         "• presentation/component: metadata.rendering_mode ('server' | 'client'); metadata.invocations [list of {type, name}]; metadata.props {}.\n"
-        "• presentation/hook: metadata.rendering_mode must be 'client'; metadata.invocations [list of {type, name}] conveying stores/use cases/hooks; optional state_fields [list].\n"
-        "• application/store: metadata.state_fields [list of keys]; metadata.dependencies [list of use case names]; metadata.invocations optional for helper calls.\n"
+        "• presentation/hook: metadata.rendering_mode must be 'client'; metadata.invocations [list of {type, name}] for stores/use cases/hooks; optional state_fields [list].\n"
+        "• application/store: represents a client-side state container. Declare metadata.state_fields [list of keys]; metadata.dependencies [list of use case names]; optional metadata.invocations for helper calls.\n"
         "• application/use_case: metadata.inputs [list], outputs [list], dependencies [list of interfaces/stores/domain services].\n"
         "• application/interface: metadata.contract [list of method names].\n"
         "• infrastructure/repository|adapter: metadata.implements [interface name]; metadata.endpoint [string]; metadata.method [string].\n"
@@ -179,11 +179,12 @@ def feature_to_component_agent(
         "• Use cases depend on interfaces/stores/domain services declared in metadata.dependencies.\n"
         "• Repositories/adapters must implement interfaces referenced by use cases.\n"
         "• Maintain dependency direction: presentation → application → domain.\n"
-        "• Provide clear intent for each object in metadata.intent (1 sentence).\n"
+        "• Provide clear intent for each object in metadata.intent (1 sentence).\n\n"
         "DELIVERABLES:\n"
         "• Minimal set covering the flows (hooks/components + use cases + adapters/stores).\n"
         "• Output ONLY a JSON array. No prose. No null values; use {} or [].\n"
     )
+
     return Agent(
         model_name,
         output_type=List[ArchitectureComponent],

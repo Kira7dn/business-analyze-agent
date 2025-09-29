@@ -1,25 +1,18 @@
-#!/usr/bin/env python3
-"""
-Business Analyze Agent - Main Entry Point
-"""
-
-import sys
 import os
-
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Add src directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-
-# Load environment variables before importing server (ensures Settings picks them up)
-load_dotenv()
-openai_api_key_loaded = bool(os.getenv("OPENAI_API_KEY"))
-
 from src.server import main
+
+# Add src directory to Python path
+project_root = Path(__file__).parent
+dotenv_path = project_root / ".env"
+load_dotenv(dotenv_path=dotenv_path, override=True)
 
 
 if __name__ == "__main__":
     import asyncio
 
-    print(f"OPENAI_API_KEY loaded: {openai_api_key_loaded}")
+    print(project_root)
+    print(os.getenv("OPENAI_API_KEY"))
     asyncio.run(main())

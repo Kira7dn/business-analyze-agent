@@ -2,13 +2,8 @@
 RAG Agent module: tech stack suggestion using Pydantic AI.
 """
 
-import openai
 from pydantic_ai import Agent
-from src.config.settings import settings
 from .utils import ContextRetriever
-
-
-openai.api_key = settings.openai_api_key
 
 
 class StackSearch:

@@ -15,8 +15,6 @@ import openai
 from tiktoken import get_encoding
 from supabase import create_client, Client
 
-from src.config.settings import settings
-
 
 def html_to_markdown(
     input_path: str,
@@ -454,8 +452,8 @@ class ContextRetriever:
     """Retrieve context from Supabase database."""
 
     def __init__(self):
-        self.supabase_url = settings.supabase_url
-        self.supabase_key = settings.supabase_key
+        self.supabase_url = os.getenv("SUPABASE_URL")
+        self.supabase_key = os.getenv("SUPABASE_KEY")
         self.supabase: Client = create_client(self.supabase_url, self.supabase_key)
 
     def get_context(self, query: str, match_count: int = 3) -> str:

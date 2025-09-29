@@ -6,6 +6,7 @@ Restructured MCP server for business requirements analysis
 
 import asyncio
 from typing import Any, Dict, List
+import os
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -18,14 +19,17 @@ from .tools.question_generator import QuestionGenerator
 from .tools.requirement_evaluator import RequirementEvaluator
 from .tools.feature_suggestion import FeatureSuggestionAgent
 from .tools.be_object_parser import BEClassParser
+from .tools.component_parser import ComponentParser
 from .utils.logger import setup_logger
-from .config.settings import settings
+from dotenv import load_dotenv
 
 # Setup logging
 logger = setup_logger(__name__)
-
+load_dotenv()
 # Initialize MCP server
-server = Server(settings.server_name)
+server = Server("business-analyze-agent")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+print("OPENAI_API_KEY: ", OPENAI_API_KEY)
 
 # Initialize tools
 try:
@@ -37,18 +41,11 @@ try:
     stack_store = ChunkEmbedStore(table_name="tech_stacks")
     structure_store = ChunkEmbedStore(table_name="tech_structures")
     be_class_parser = BEClassParser()
+    component_parser = ComponentParser()
     logger.info("All tools initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize tools: {str(e)}")
 
-    class DummyEvaluator:
-        """A fallback evaluator that raises an initialization error when called."""
-
-        async def evaluate(self, input_text: str):
-            """Raise an error indicating evaluator initialization failure."""
-            raise RuntimeError(f"Evaluator initialization failed: {str(e)}")
-
-    evaluator = DummyEvaluator()
+except Exception as exc:  # noqa: BLE001
+    logger.exception("Failed to initialize RequirementEvaluator: %s", exc)
 
 
 @server.list_tools()
@@ -147,6 +144,20 @@ async def list_tools() -> List[Tool]:
                 "required": ["prd_text"],
             },
         ),
+        Tool(
+            name="component_parser",
+            description="Generate Clean Architecture components from PRD text.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prd_text": {
+                        "type": "string",
+                        "description": "Product Requirements Document text to transform into components.",
+                    }
+                },
+                "required": ["prd_text"],
+            },
+        ),
     ]
 
 
@@ -167,7 +178,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             project_description = arguments.get("project_description", "")
             project_type = arguments.get("project_type", "web")
 
-            logger.info(f"Analyzing requirements for {project_type} project")
+            logger.info("Analyzing requirements for %s project", project_type)
 
             # Analyze requirements using the analyzer tool
             analysis = analyzer.analyze(project_description, project_type)
@@ -207,7 +218,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             requirements = arguments.get("requirements", "")
             focus_area = arguments.get("focus_area", "general")
 
-            logger.info(f"Generating questions for focus area: {focus_area}")
+            logger.info("Generating questions for focus area: %s", focus_area)
 
             # Generate questions using the question generator tool
             question_result = question_gen.generate(requirements, focus_area)
@@ -277,14 +288,14 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         elif name == "stack_store":
             file_path = arguments.get("file_path", "")
             logger.info(
-                f"Storing chunks of text into Supabase with embeddings: {file_path}"
+                "Storing chunks of text into Supabase with embeddings: %s", file_path
             )
             result = await stack_store.process(file_path)
             return [TextContent(type="text", text=result)]
         elif name == "structure_store":
             file_path = arguments.get("file_path", "")
             logger.info(
-                f"Storing chunks of text into Supabase with embeddings: {file_path}"
+                "Storing chunks of text into Supabase with embeddings: %s", file_path
             )
             result = await structure_store.process(file_path)
             return [TextContent(type="text", text=result)]
@@ -293,6 +304,20 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             logger.info("Parsing PRD to backend classes")
             # be_class_parser = BEClassParser()
             result = await be_class_parser.process(prd_text)
+            return [TextContent(type="text", text=result)]
+        elif name == "component_parser":
+            prd_text = arguments.get("prd_text", "")
+            if not prd_text:
+                logger.warning("component_parser called without prd_text")
+                return [
+                    TextContent(
+                        type="text",
+                        text="❌ Missing 'prd_text' argument for component_parser tool.",
+                    )
+                ]
+
+            logger.info("Generating components from PRD text")
+            result = await component_parser.process(prd_text)
             return [TextContent(type="text", text=result)]
         else:
             return [
@@ -303,7 +328,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             ]
 
     except Exception as e:
-        logger.error(f"Error in tool {name}: {str(e)}")
+        logger.error("Error in tool %s: %s", name, e)
         return [
             TextContent(
                 type="text",
@@ -314,7 +339,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
 
 async def main():
     """Main entry point"""
-    logger.info(f"Starting {settings.server_name} MCP Server")
+    logger.info("Starting MCP Server")
 
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
